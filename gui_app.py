@@ -44,6 +44,7 @@ import win32con
 
 # 导入我们的后台引擎
 import engine
+import vision
 from display_dimmer import DisplayDimmer
 from preview_dialog import PreviewDialog
 from profile_store import ProfileStore, ProfileStoreError
@@ -2104,22 +2105,7 @@ class AEAutomationApp:
         
     def load_template_click_anchor(self, filename):
         """读取模板内的实际点击锚点；旧模板没有元数据时兼容使用中心点。"""
-        template_path = os.path.join(TEMPLATES_DIR, filename)
-        metadata_path = os.path.splitext(template_path)[0] + ".json"
-        if not os.path.exists(metadata_path):
-            self.log(f"模板没有点击锚点元数据，将兼容使用模板中心: {metadata_path}")
-            return 0.5, 0.5
-        try:
-            with open(metadata_path, "r", encoding="utf-8") as f:
-                metadata = json.load(f)
-            offset_x = float(metadata["click_offset_x"])
-            offset_y = float(metadata["click_offset_y"])
-            if not (0.0 <= offset_x <= 1.0 and 0.0 <= offset_y <= 1.0):
-                raise ValueError(f"点击锚点越界: ({offset_x},{offset_y})")
-            return offset_x, offset_y
-        except Exception as e:
-            self.log(f"读取模板点击锚点失败，将使用中心点: {e}")
-            return 0.5, 0.5
+        return vision.load_template_click_anchor(TEMPLATES_DIR, filename, self.log)
 
     def match_template_location(
         self,
@@ -2131,15 +2117,12 @@ class AEAutomationApp:
         """
         在截图中寻找特征模板，并返回模板内部预先标定的实际点击点。
         """
-        diagnostics = self.analyze_template_match(
+        return vision.match_template_location(
             full_img,
             template_img,
             threshold=threshold,
             click_anchor=click_anchor,
         )
-        if diagnostics["matched"]:
-            return diagnostics["relative_x"], diagnostics["relative_y"], diagnostics["confidence"]
-        return None
 
     def analyze_template_match(
         self,
@@ -2149,27 +2132,12 @@ class AEAutomationApp:
         click_anchor=(0.5, 0.5),
     ):
         """无论是否超过阈值，都返回最高置信度及候选位置，供诊断日志使用。"""
-        if full_img is None or template_img is None:
-            raise ValueError("识别图像或模板为空")
-        full_h, full_w = full_img.shape[:2]
-        template_h, template_w = template_img.shape[:2]
-        if template_w > full_w or template_h > full_h:
-            raise ValueError(
-                f"模板尺寸 {template_w}x{template_h} 大于截图 {full_w}x{full_h}"
-            )
-
-        res = cv2.matchTemplate(full_img, template_img, cv2.TM_CCOEFF_NORMED)
-        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
-        anchor_x, anchor_y = click_anchor
-        cx = max_loc[0] + round(anchor_x * max(1, template_w - 1))
-        cy = max_loc[1] + round(anchor_y * max(1, template_h - 1))
-        return {
-            "matched": bool(max_val >= threshold),
-            "confidence": float(max_val),
-            "max_location": tuple(max_loc),
-            "relative_x": cx / max(1, full_w - 1),
-            "relative_y": cy / max(1, full_h - 1),
-        }
+        return vision.analyze_template_match(
+            full_img,
+            template_img,
+            threshold=threshold,
+            click_anchor=click_anchor,
+        )
 
     def detect_start_button_by_color(self, full_img):
         """
