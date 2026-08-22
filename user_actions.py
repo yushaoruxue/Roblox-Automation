@@ -1,44 +1,53 @@
-"""User-facing action model + compiler (Slice 4R).
+"""User-facing action model + compiler (Slice 4R / Slice 5).
 
 Three-layer model:
 
   Layer 1  execution primitives:  key / click / wait / find_image /
-                                   click_image / if_image / repeat
-                                   (``script_runner.py``)
-  Layer 2  user actions:          key / click / key_click / click_image /
-                                   if_image / repeat / group / wait / find_image
-                                   (this module — what the GUI edits)
+                                   click_image / if_image / repeat /
+                                   find_color / click_color / if_color /
+                                   wait_color / wait_image / drag
+                                   (``script_runner.py`` + ``engine.py``)
+  Layer 2  user actions:          what the GUI edits (this module)
   Layer 3  custom actions:        saved groups / game-specific logic (future)
 
 The GUI edits Layer-2 "user actions"; ``compile_user_actions`` lowers them to
 Layer-1 primitives that ``script_runner.run_script`` executes. The GUI never
 edits primitives directly.
 
-Key UX rules (v0.1):
+Color conventions:
+  - Layer-2 stores colors as hex strings (``"#43A982"``) for readability.
+  - The compiler converts them to RGB tuples ``(r, g, b)`` for Layer-1, which
+    is what ``vision.find_color`` consumes.
+  - ``region`` is either ``None`` (whole client) or an ``(x, y, w, h)``
+    normalized tuple; the GUI stores it as a dict ``{"x","y","width","height"}``
+    and the compiler flattens it.
 
-- Every "immediate" action (key / click / key_click / click_image) carries an
-  optional ``after_wait`` (seconds) which compiles to a trailing ``wait``; a
-  value of 0 emits no wait.
-- ``key_click`` is the P0 composite: one action = key + click (+ wait). It never
-  auto-inserts "z" — that is legacy AE compatibility, not generic semantics.
-- ``group`` is a named container; the compiler recursively inlines its children
-  (it has no runtime behavior of its own).
+Immediate actions (key / click / key_click / click_image / click_color / drag)
+carry an optional ``after_wait`` that compiles to a trailing ``wait``; 0 emits
+no wait. ``key_click`` is the P0 composite (key + click), never auto-inserts
+"z" (that is legacy AE compatibility, not generic semantics). ``group`` is a
+named container; the compiler inlines its children.
 """
 
 from __future__ import annotations
 
 import copy
 
+import vision
 
-# ---- v0.1 action library (categories shown in the GUI) ----
+
+# ---- action library (categories shown in the GUI) ----
 ACTION_LIBRARY = {
-    "点击": [("点击坐标", "click"), ("点击图片", "click_image")],
-    "输入": [("按键", "key"), ("按键后点击", "key_click"),
-             ("按住按键", "key_hold"), ("松开按键", "key_release")],
-    "判断": [("如果图片", "if_image")],
+    "点击": [("点击坐标", "click"), ("点击图片", "click_image"),
+             ("点击颜色", "click_color")],
+    "输入": [("按键", "key"), ("按键后点击", "key_click")],
+    "判断": [("如果图片", "if_image"), ("如果颜色", "if_color"),
+             ("等待图片", "wait_image"), ("等待颜色", "wait_color")],
+    "手势": [("拖动", "drag")],
     "流程": [("等待", "wait"), ("重复", "repeat"), ("动作组", "group")],
-    "高级": [("找图片", "find_image")],
+    "高级": [("找图片", "find_image"), ("找颜色", "find_color")],
 }
+
 
 # ---- default templates for new actions ----
 ACTION_TEMPLATES = {
@@ -54,15 +63,28 @@ ACTION_TEMPLATES = {
     "group": {"type": "group", "name": "动作组", "actions": []},
     "wait": {"type": "wait", "seconds": 0.2},
     "find_image": {"type": "find_image", "template": "", "threshold": 0.85},
-    "key_hold": {"type": "key_hold", "key": "shift"},
-    "key_release": {"type": "key_release", "key": "shift"},
+    # ---- Slice 5: color ----
+    "click_color": {"type": "click_color", "color": "#43A982", "tolerance": 12,
+                    "region": None, "after_wait": 0.2},
+    "if_color": {"type": "if_color", "color": "#43A982", "tolerance": 12,
+                 "region": None, "then": [], "else": []},
+    "wait_color": {"type": "wait_color", "color": "#43A982", "tolerance": 12,
+                   "region": None, "poll_interval": 0.5, "timeout": None},
+    "find_color": {"type": "find_color", "color": "#43A982", "tolerance": 12,
+                   "region": None},
+    # ---- Slice 5: wait image ----
+    "wait_image": {"type": "wait_image", "template": "", "threshold": 0.85,
+                   "poll_interval": 0.5, "timeout": None},
+    # ---- Slice 5: drag ----
+    "drag": {"type": "drag", "from": {"x": 0.3, "y": 0.4},
+             "to": {"x": 0.7, "y": 0.4}, "duration": 0.5, "after_wait": 0.2},
 }
 
-# ---- v0.2 / v0.3 roadmap (documented, NOT implemented; GUI hides them) ----
+
+# ---- future roadmap (documented, NOT implemented; GUI hides them) ----
 RESERVED_ACTIONS = {
-    "v0.2": ["点击颜色", "如果颜色", "等待图片", "等待颜色"],
-    "v0.3": ["拖动", "滚轮", "按住按键", "释放按键", "输入文字", "变量",
-             "OCR", "RunScript", "JavaScript", "Recorder", "自定义动作库"],
+    "v0.3": ["滚轮", "输入文字", "变量", "OCR", "RunScript", "JavaScript",
+             "Recorder", "自定义动作库"],
 }
 
 
@@ -81,10 +103,6 @@ def action_summary(act):
     suffix = f"  +{after:g}s" if after else ""
     if t == "key":
         return f"按键 [{act.get('key', '')}]" + suffix
-    if t == "key_hold":
-        return f"按住 [{act.get('key', '')}]"
-    if t == "key_release":
-        return f"松开 [{act.get('key', '')}]"
     if t == "click":
         return f"点击 ({act.get('x', 0):.3f}, {act.get('y', 0):.3f})" + suffix
     if t == "key_click":
@@ -102,16 +120,41 @@ def action_summary(act):
         return f"等待 {act.get('seconds', 0):g}s"
     if t == "find_image":
         return f"找图片 {act.get('template', '(未选)')}  ≥{act.get('threshold', 0.85):g}"
+    # ---- color ----
+    if t == "click_color":
+        return f"点击颜色 {act.get('color', '')} ±{act.get('tolerance', 0)}" + suffix
+    if t == "if_color":
+        return f"如果颜色 {act.get('color', '')} ±{act.get('tolerance', 0)}"
+    if t == "wait_color":
+        return f"等待颜色 {act.get('color', '')} ±{act.get('tolerance', 0)}  {_timeout_label(act)}"
+    if t == "find_color":
+        return f"找颜色 {act.get('color', '')} ±{act.get('tolerance', 0)}"
+    # ---- wait image ----
+    if t == "wait_image":
+        return f"等待图片 {act.get('template', '(未选)')}  {_timeout_label(act)}"
+    # ---- drag ----
+    if t == "drag":
+        frm = act.get("from", {})
+        to = act.get("to", {})
+        return (f"拖动 ({frm.get('x', 0):.2f},{frm.get('y', 0):.2f}) → "
+                f"({to.get('x', 0):.2f},{to.get('y', 0):.2f})  "
+                f"{act.get('duration', 0.5):g}s" + suffix)
     return f"未知 {t}"
+
+
+def _timeout_label(act):
+    timeout = act.get("timeout")
+    return "∞" if timeout is None else f"{timeout:g}s"
 
 
 def child_container(action):
     """Return the list of child-list keys for a container user action, or [].
 
-    if_image -> ["then", "else"]; repeat / group -> ["actions"]; leaves -> [].
+    if_image / if_color -> ["then", "else"]; repeat / group -> ["actions"];
+    leaves -> [].
     """
     t = action.get("type")
-    if t == "if_image":
+    if t in ("if_image", "if_color"):
         return ["then", "else"]
     if t in ("repeat", "group"):
         return ["actions"]
@@ -130,23 +173,40 @@ def validate_user_actions(actions, where="script"):
         loc = f"{where}[{i}]"
         if atype not in _VALID_TYPES:
             raise ValueError(f"{loc} 未知动作类型: {atype!r}")
-        if atype in ("key", "key_click", "key_hold", "key_release"):
+        if atype in ("key", "key_click"):
             key_val = act.get("key")
             if not isinstance(key_val, str) or not key_val.strip():
                 raise ValueError(f"{loc} {atype} key 必须是非空字符串")
         if atype in ("click", "key_click"):
-            x, y = act.get("x"), act.get("y")
-            if x is None or y is None:
-                raise ValueError(f"{loc} {atype} 缺少坐标")
-            if not (0.0 <= float(x) <= 1.0 and 0.0 <= float(y) <= 1.0):
-                raise ValueError(f"{loc} {atype} 坐标越界: ({x},{y})")
-        if atype in ("key", "click", "key_click", "click_image"):
-            after = act.get("after_wait", 0) or 0
-            if float(after) < 0:
+            _validate_point(act.get("x"), act.get("y"), f"{loc} {atype}")
+        if atype == "drag":
+            frm, to = act.get("from") or {}, act.get("to") or {}
+            _validate_point(frm.get("x"), frm.get("y"), f"{loc} drag.from")
+            _validate_point(to.get("x"), to.get("y"), f"{loc} drag.to")
+            if float(act.get("duration", 0.5)) <= 0:
+                raise ValueError(f"{loc} drag 时长必须大于 0")
+        if atype in ("key", "click", "key_click", "click_image", "click_color",
+                     "drag"):
+            if float(act.get("after_wait", 0) or 0) < 0:
                 raise ValueError(f"{loc} after_wait 不能小于 0")
-        if atype in ("find_image", "click_image", "if_image"):
+        if atype in ("find_image", "click_image", "if_image", "wait_image"):
             if not isinstance(act.get("template"), str):
                 raise ValueError(f"{loc} {atype} template 必须是字符串")
+        if atype in ("find_color", "click_color", "if_color", "wait_color"):
+            if act.get("color") is None:
+                raise ValueError(f"{loc} {atype} 缺少颜色")
+            try:
+                vision.hex_to_rgb(act["color"])
+            except ValueError as e:
+                raise ValueError(f"{loc} {atype} 颜色无效: {e}")
+            if float(act.get("tolerance", 0)) < 0:
+                raise ValueError(f"{loc} {atype} tolerance 不能小于 0")
+            region = act.get("region")
+            if region is not None:
+                _validate_region(region, f"{loc} {atype}.region")
+        if atype in ("wait_image", "wait_color"):
+            if float(act.get("poll_interval", 0.5)) <= 0:
+                raise ValueError(f"{loc} {atype} poll_interval 必须大于 0")
         if atype == "wait":
             if float(act.get("seconds", 0)) < 0:
                 raise ValueError(f"{loc} 等待时长不能小于 0")
@@ -154,7 +214,7 @@ def validate_user_actions(actions, where="script"):
             if not act.get("forever") and not isinstance(act.get("count"), int):
                 raise ValueError(f"{loc} repeat 需要 count 或 forever=true")
             validate_user_actions(act.get("actions", []), f"{loc}.actions")
-        if atype == "if_image":
+        if atype in ("if_image", "if_color"):
             validate_user_actions(act.get("then", []), f"{loc}.then")
             validate_user_actions(act.get("else", []), f"{loc}.else")
         if atype == "group":
@@ -162,8 +222,39 @@ def validate_user_actions(actions, where="script"):
     return actions
 
 
+def _validate_point(x, y, loc):
+    if x is None or y is None:
+        raise ValueError(f"{loc} 缺少坐标")
+    try:
+        x, y = float(x), float(y)
+    except (TypeError, ValueError):
+        raise ValueError(f"{loc} 坐标无效")
+    if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
+        raise ValueError(f"{loc} 坐标越界: ({x},{y})")
+
+
+def _validate_region(region, loc):
+    for k in ("x", "y", "width", "height"):
+        if k not in region:
+            raise ValueError(f"{loc} 缺少 {k}")
+        if not (0.0 <= float(region[k]) <= 1.0):
+            raise ValueError(f"{loc} {k} 越界")
+
+
 def _after_wait(act):
     return float(act.get("after_wait", 0) or 0)
+
+
+def _region_tuple(region):
+    """Flatten a GUI region dict to an (x, y, w, h) tuple, or None."""
+    if region is None:
+        return None
+    return (float(region["x"]), float(region["y"]),
+            float(region["width"]), float(region["height"]))
+
+
+def _color_rgb(act):
+    return list(vision.hex_to_rgb(act["color"]))
 
 
 def compile_user_actions(actions):
@@ -181,10 +272,6 @@ def _compile_one(act):
                  "hold_seconds": float(act.get("hold_seconds", 0.06))}]
         _append_wait(prim, _after_wait(act))
         return prim
-    if t == "key_hold":
-        return [{"type": "key_down", "key": act["key"]}]
-    if t == "key_release":
-        return [{"type": "key_up", "key": act["key"]}]
     if t == "click":
         prim = [{"type": "click", "x": float(act["x"]), "y": float(act["y"])}]
         _append_wait(prim, _after_wait(act))
@@ -219,13 +306,48 @@ def _compile_one(act):
             node["count"] = int(act.get("count", 1))
         return [node]
     if t == "group":
-        # groups inline their children (no runtime behavior of their own)
         return compile_user_actions(act.get("actions", []))
     if t == "wait":
         return [{"type": "wait", "seconds": float(act.get("seconds", 0))}]
     if t == "find_image":
         return [{"type": "find_image", "template": act["template"],
                  "threshold": float(act.get("threshold", 0.85))}]
+    # ---- color ----
+    if t in ("find_color", "click_color", "if_color", "wait_color"):
+        prim = [{
+            "type": t,
+            "color": _color_rgb(act),
+            "tolerance": int(act.get("tolerance", 0)),
+            "region": _region_tuple(act.get("region")),
+        }]
+        if t == "if_color":
+            prim[0]["then"] = compile_user_actions(act.get("then", []))
+            prim[0]["else"] = compile_user_actions(act.get("else", []))
+        if t == "wait_color":
+            prim[0]["poll_interval"] = float(act.get("poll_interval", 0.5))
+            prim[0]["timeout"] = act.get("timeout")
+        if t == "click_color":
+            _append_wait(prim, _after_wait(act))
+        return prim
+    # ---- wait image ----
+    if t == "wait_image":
+        return [{
+            "type": "wait_image",
+            "template": act["template"],
+            "threshold": float(act.get("threshold", 0.85)),
+            "poll_interval": float(act.get("poll_interval", 0.5)),
+            "timeout": act.get("timeout"),
+        }]
+    # ---- drag ----
+    if t == "drag":
+        prim = [{
+            "type": "drag",
+            "from": {"x": float(act["from"]["x"]), "y": float(act["from"]["y"])},
+            "to": {"x": float(act["to"]["x"]), "y": float(act["to"]["y"])},
+            "duration": float(act.get("duration", 0.5)),
+        }]
+        _append_wait(prim, _after_wait(act))
+        return prim
     raise ValueError(f"未知用户动作类型: {t!r}")
 
 

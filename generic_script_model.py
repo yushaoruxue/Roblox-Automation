@@ -223,6 +223,19 @@ class GenericScriptModel:
         prims = user_actions.compile_user_actions([action])
         return engine.run_input_actions(hwnd, prims)
 
+    def test_find_color(self, hwnd, color_hex, tolerance=12, region=None):
+        """Capture the Roblox frame NOW and find ``color_hex``. Returns the same
+        dict as vision.find_color (found / position / match_count / actual_color)."""
+        frame = engine.capture_window(hwnd)
+        if frame is None:
+            raise ScriptStoreError("截图失败（窗口不可用或画面不可见）")
+        rgb = vision.hex_to_rgb(color_hex)
+        region_tuple = None
+        if region:
+            region_tuple = (region["x"], region["y"],
+                            region["width"], region["height"])
+        return vision.find_color(frame, rgb, int(tolerance), region=region_tuple)
+
 
 class GenericRunnerController:
     """Runs a script on a worker thread; stop via stop_event; logs via queue."""

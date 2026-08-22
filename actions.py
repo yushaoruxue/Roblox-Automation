@@ -72,11 +72,6 @@ def validate_actions(actions):
                 raise ValueError(f"动作 {index + 1} 的 hold_seconds 无效")
             if hold < 0:
                 raise ValueError(f"动作 {index + 1} 的 hold_seconds 不能小于 0")
-        elif atype in ("key_down", "key_up"):
-            # 持久按键/松键：只要求 key 非空字符串，不限制取值，不强行释放。
-            key = act.get("key")
-            if not isinstance(key, str) or not key.strip():
-                raise ValueError(f"动作 {index + 1} 的按键不能为空")
         elif atype == "click":
             x, y = act.get("x"), act.get("y")
             if x is None or y is None:
@@ -87,6 +82,24 @@ def validate_actions(actions):
                 raise ValueError(f"动作 {index + 1} 的坐标无效")
             if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
                 raise ValueError(f"动作 {index + 1} 的坐标越界: ({x},{y})")
+        elif atype == "drag":
+            for label in ("from", "to"):
+                pt = act.get(label) or {}
+                x, y = pt.get("x"), pt.get("y")
+                if x is None or y is None:
+                    raise ValueError(f"动作 {index + 1} 的拖动{label}坐标不能为空")
+                try:
+                    x, y = float(x), float(y)
+                except (TypeError, ValueError):
+                    raise ValueError(f"动作 {index + 1} 的拖动{label}坐标无效")
+                if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
+                    raise ValueError(f"动作 {index + 1} 的拖动{label}坐标越界")
+            try:
+                duration = float(act.get("duration", 0.5))
+            except (TypeError, ValueError):
+                raise ValueError(f"动作 {index + 1} 的拖动时长无效")
+            if duration <= 0:
+                raise ValueError(f"动作 {index + 1} 的拖动时长必须大于 0")
         elif atype == "wait":
             try:
                 seconds = float(act.get("seconds"))

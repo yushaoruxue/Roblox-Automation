@@ -36,8 +36,10 @@ import engine
 import vision
 
 
-_INPUT_TYPES = ("key", "click", "key_down", "key_up")
-_VISION_TYPES = ("find_image", "click_image", "if_image")
+_INPUT_TYPES = ("key", "click", "drag")
+_VISION_TYPES = ("find_image", "click_image", "if_image",
+                 "find_color", "click_color", "if_color",
+                 "wait_color", "wait_image")
 _ALL_TYPES = _INPUT_TYPES + _VISION_TYPES + ("repeat", "wait")
 
 
@@ -82,17 +84,31 @@ def validate_script_actions(actions, where="script"):
                 raise ScriptError(f"{loc} wait 时长无效")
             if seconds < 0:
                 raise ScriptError(f"{loc} wait 时长不能小于 0")
-        elif atype in _VISION_TYPES:
+        elif atype == "drag":
+            for label in ("from", "to"):
+                pt = act.get(label) or {}
+                x, y = pt.get("x"), pt.get("y")
+                if x is None or y is None:
+                    raise ScriptError(f"{loc} drag 缺少 {label} 坐标")
+            if float(act.get("duration", 0.5)) <= 0:
+                raise ScriptError(f"{loc} drag 时长必须大于 0")
+        elif atype in ("find_image", "click_image", "if_image", "wait_image"):
             tpl = act.get("template")
             if not isinstance(tpl, str) or not tpl.strip():
                 raise ScriptError(f"{loc} {atype} 缺少有效 template")
+        elif atype in ("find_color", "click_color", "if_color", "wait_color"):
+            color = act.get("color")
+            if not (isinstance(color, (tuple, list)) and len(color) == 3):
+                raise ScriptError(f"{loc} {atype} 缺少有效 color (RGB)")
+            if float(act.get("tolerance", 0)) < 0:
+                raise ScriptError(f"{loc} {atype} tolerance 不能小于 0")
         elif atype == "repeat":
             if not act.get("forever"):
                 count = act.get("count")
                 if not isinstance(count, int) or count < 0:
                     raise ScriptError(f"{loc} repeat 需要 count 或 forever=true")
             validate_script_actions(act.get("actions", []), f"{loc}.actions")
-        if atype == "if_image":
+        if atype in ("if_image", "if_color"):
             validate_script_actions(act.get("then", []), f"{loc}.then")
             validate_script_actions(act.get("else", []), f"{loc}.else")
 
@@ -145,6 +161,16 @@ class ScriptRunner:
             self._do_click_image(act)
         elif atype == "if_image":
             self._do_if_image(act)
+        elif atype == "find_color":
+            self._do_find_color(act)
+        elif atype == "click_color":
+            self._do_click_color(act)
+        elif atype == "if_color":
+            self._do_if_color(act)
+        elif atype == "wait_color":
+            self._do_wait_color(act)
+        elif atype == "wait_image":
+            self._do_wait_image(act)
         elif atype == "repeat":
             self._do_repeat(act)
         else:
@@ -246,6 +272,100 @@ class ScriptRunner:
             if self.stop_event.is_set():
                 raise ScriptStop()
             self._execute_actions(body)
+
+    # ---- color helpers ----
+    def _find_color(self, act):
+        frame = self._fresh_frame()
+        color = tuple(act["color"])
+        tolerance = int(act.get("tolerance", 0))
+        region = act.get("region")
+        return vision.find_color(frame, color, tolerance, region=region)
+
+    def _do_find_color(self, act):
+        res = self._find_color(act)
+        if res["found"]:
+            x, y = res["position"]
+            self.log(
+                f"[Script] find_color: color={act['color']} found=True "
+                f"position=({x:.4f},{y:.4f}) count={res['match_count']}"
+            )
+        else:
+            self.log(f"[Script] find_color: color={act['color']} found=False")
+        return res
+
+    def _do_click_color(self, act):
+        res = self._find_color(act)
+        if not res["found"]:
+            self.log(f"[Script] click_color: color={act['color']} NOT_FOUND，不点击")
+            return
+        x, y = res["position"]
+        self.log(
+            f"[Script] click_color: color={act['color']} found，点击 ({x:.4f},{y:.4f})"
+        )
+        self._flush([{"type": "click", "x": x, "y": y}])
+
+    def _do_if_color(self, act):
+        res = self._find_color(act)
+        branch = act["then"] if res["found"] else act.get("else", [])
+        self.log(
+            f"[Script] if_color: color={act['color']} -> "
+            f"{'then' if res['found'] else 'else'}"
+        )
+        self._execute_actions(branch)
+
+    def _poll_until(self, condition_fn, poll_interval, timeout):
+        """Poll condition_fn() until it returns a truthy result, or ``timeout``
+        seconds elapse (None = wait forever), or stop_event is set. Returns the
+        truthy result, or None on timeout. ``condition_fn`` raises ScriptError
+        on capture failure."""
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            if self.stop_event.is_set():
+                raise ScriptStop()
+            result = condition_fn()
+            if result:
+                return result
+            if deadline is not None and time.monotonic() >= deadline:
+                return None
+            self._do_wait(float(poll_interval))
+
+    def _do_wait_image(self, act):
+        poll_interval = float(act.get("poll_interval", 0.5))
+        timeout = act.get("timeout")  # None = forever
+        label = act["template"]
+
+        def _try():
+            diag = self._find(act)
+            if diag["matched"]:
+                return diag
+            return None
+
+        diag = self._poll_until(_try, poll_interval, timeout)
+        if diag is None:
+            self.log(f"[Script] wait_image: template={label} 超时未出现")
+            return
+        self.log(
+            f"[Script] wait_image: template={label} 出现 "
+            f"position=({diag['relative_x']:.4f},{diag['relative_y']:.4f})"
+        )
+
+    def _do_wait_color(self, act):
+        poll_interval = float(act.get("poll_interval", 0.5))
+        timeout = act.get("timeout")  # None = forever
+        color = tuple(act["color"])
+
+        def _try():
+            res = self._find_color(act)
+            if res["found"]:
+                return res
+            return None
+
+        res = self._poll_until(_try, poll_interval, timeout)
+        if res is None:
+            self.log(f"[Script] wait_color: color={color} 超时未出现")
+            return
+        x, y = res["position"]
+        self.log(f"[Script] wait_color: color={color} 出现 position=({x:.4f},{y:.4f})")
 
 
 def run_script(hwnd, actions, base_dir, stop_event=None, log_callback=None):

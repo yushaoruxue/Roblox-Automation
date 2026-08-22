@@ -107,40 +107,12 @@ class ModelRoundtripTests(unittest.TestCase):
                          {"type": "click", "x": 0.1, "y": 0.2})
 
 
-# ---- key_hold / key_release 编译与摘要 ----
-class KeyHoldReleaseTests(unittest.TestCase):
+# ---- dirty tracking ----
+class DirtyTrackingTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.store = ScriptStore(os.path.join(self.tmp, "scripts"))
 
-    def test_key_hold_compiles_to_key_down(self):
-        a = ua.new_action("key_hold")
-        a["key"] = "shift"
-        out = ua.compile_user_actions([a])
-        self.assertEqual(out, [{"type": "key_down", "key": "shift"}])
-
-    def test_key_release_compiles_to_key_up(self):
-        a = ua.new_action("key_release")
-        a["key"] = "shift"
-        out = ua.compile_user_actions([a])
-        self.assertEqual(out, [{"type": "key_up", "key": "shift"}])
-
-    def test_key_hold_release_have_no_after_wait(self):
-        self.assertNotIn("after_wait", ua.ACTION_TEMPLATES["key_hold"])
-        self.assertNotIn("after_wait", ua.ACTION_TEMPLATES["key_release"])
-
-    def test_summaries(self):
-        self.assertEqual(ua.action_summary(ua.new_action("key_hold")), "按住 [shift]")
-        self.assertEqual(ua.action_summary(ua.new_action("key_release")), "松开 [shift]")
-
-    def test_validate_rejects_empty_key(self):
-        for t in ("key_hold", "key_release"):
-            a = ua.new_action(t)
-            a["key"] = ""
-            with self.assertRaises(ValueError):
-                ua.validate_user_actions([a])
-
-    # H: dirty on new/nested edit
     def test_dirty_on_user_actions(self):
         model = GenericScriptModel(self.store)
         model.new("A", [ua.new_action("key_click")])

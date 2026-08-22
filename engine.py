@@ -220,41 +220,58 @@ def _press_key_held(key, hold_seconds=0.08):
     return bool(downed and upped)
 
 
-def _press_key_down(key):
-    """只按下不松开（用于 key_hold）。返回是否成功。"""
-    ok = pydirectinput.keyDown(key)
-    if ok:
-        _HELD_KEYS.add(key)
-    return bool(ok)
-
-
-def _press_key_up(key):
-    """只松开（用于 key_release）。返回是否成功。"""
-    ok = pydirectinput.keyUp(key)
-    _HELD_KEYS.discard(key)
-    return bool(ok)
-
-
-# 跟踪当前被按住但尚未松开的键（key_hold 用），脚本结束/出错时统一释放，
-# 防止因脚本中断而留下"粘住"的键。
-_HELD_KEYS = set()
-
-
-def release_all_held_keys():
-    """释放所有被 key_hold 按住但尚未松开的键。"""
-    for k in list(_HELD_KEYS):
-        try:
-            pydirectinput.keyUp(k)
-        except Exception:
-            pass
-    _HELD_KEYS.clear()
-
-
 def _click_current_position():
     """在当前系统光标位置发送一次标准的合成左键点击。"""
     win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
     time.sleep(0.1)
     win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+
+
+def _do_drag(hwnd, act, log_callback=None):
+    """Execute a drag gesture: move to start, mouse-down, linear-interpolate to
+    end over ``duration`` seconds, mouse-up. Guarantees mouse-up on any error so
+    the button is never left stuck. Returns True on success."""
+    from_rel = act["from"]
+    to_rel = act["to"]
+    duration = float(act.get("duration", 0.5))
+    if duration <= 0:
+        duration = 0.05
+
+    _, _, sx0, sy0, width, height = relative_to_screen(hwnd, from_rel["x"], from_rel["y"])
+    _, _, sx1, sy1, _, _ = relative_to_screen(hwnd, to_rel["x"], to_rel["y"])
+
+    if win32gui.GetForegroundWindow() != hwnd:
+        _emit("[Engine] 拖动前 Roblox 已失去焦点，序列中止。", log_callback)
+        return False
+    if not _move_and_verify(sx0, sy0)[0]:
+        _emit(f"[Engine] 拖动起点定位失败: ({sx0},{sy0})", log_callback)
+        return False
+    if win32gui.GetForegroundWindow() != hwnd:
+        _emit("[Engine] 拖动按下前 Roblox 已失去焦点，序列中止。", log_callback)
+        return False
+
+    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+    mouse_down = True
+    try:
+        steps = max(1, int(duration / 0.01))
+        for i in range(1, steps + 1):
+            t = i / steps
+            x = round(sx0 + (sx1 - sx0) * t)
+            y = round(sy0 + (sy1 - sy0) * t)
+            win32api.SetCursorPos((x, y))
+            time.sleep(duration / steps)
+        # 最终精确到位，确保终点坐标无误。
+        win32api.SetCursorPos((sx1, sy1))
+        time.sleep(0.05)
+    finally:
+        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+    _emit(
+        f"[Engine] drag: ({from_rel['x']:.3f},{from_rel['y']:.3f})→"
+        f"({to_rel['x']:.3f},{to_rel['y']:.3f})  {duration:g}s, "
+        "physical_lock=keyboard+mouse",
+        log_callback,
+    )
+    return True
 
 
 def _set_physical_input_blocked(blocked):
@@ -353,16 +370,6 @@ def run_input_actions(hwnd, actions_list, log_callback=None):
                 if not _press_key_held(act["key"], act["hold_seconds"]):
                     _emit(f"[Engine] 动作 {index + 1} 的按键 {act['key']!r} 发送失败，序列中止。", log_callback)
                     return False
-            elif atype == "key_down":
-                if not _press_key_down(act["key"]):
-                    _emit(f"[Engine] 动作 {index + 1} 的按住 {act['key']!r} 失败，序列中止。", log_callback)
-                    return False
-                _emit(f"[Engine] 按住 {act['key']!r}", log_callback)
-            elif atype == "key_up":
-                if not _press_key_up(act["key"]):
-                    _emit(f"[Engine] 动作 {index + 1} 的松开 {act['key']!r} 失败，序列中止。", log_callback)
-                    return False
-                _emit(f"[Engine] 松开 {act['key']!r}", log_callback)
             elif atype == "click":
                 client_x, client_y, screen_x, screen_y, width, height = relative_to_screen(
                     hwnd, act["x"], act["y"]
@@ -395,6 +402,9 @@ def run_input_actions(hwnd, actions_list, log_callback=None):
                     "confirm=BetterClick, physical_lock=keyboard+mouse",
                     log_callback,
                 )
+            elif atype == "drag":
+                if not _do_drag(hwnd, act, log_callback):
+                    return False
             elif atype == "wait":
                 time.sleep(act["seconds"])
             else:

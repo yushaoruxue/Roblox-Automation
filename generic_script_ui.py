@@ -530,13 +530,6 @@ class GenericScriptUI(tk.Frame):
             self._form_row("按住(秒)", "hold_seconds", action.get("hold_seconds", 0.06), "float")
             self._form_row("执行后等待(秒)", "after_wait", action.get("after_wait", 0), "float")
             self._test_btn(action)
-        elif t == "key_hold":
-            self._key_field_with_capture(action, "key", "按住哪个键")
-            tk.Label(self.form_frame, text="⚠ 必须有匹配的 key_release 松开，否则键会一直按住",
-                     bg=c["bg_surface"], fg="#e6b566", font=("Microsoft YaHei UI", 9),
-                     wraplength=280, justify="left").pack(anchor="w", padx=14, pady=4)
-        elif t == "key_release":
-            self._key_field_with_capture(action, "key", "松开哪个键")
         elif t == "click":
             self._form_row("X", "x", action.get("x", 0.5), "float")
             self._form_row("Y", "y", action.get("y", 0.5), "float")
@@ -555,6 +548,12 @@ class GenericScriptUI(tk.Frame):
             self._form_row("等待(秒)", "seconds", action.get("seconds", 0.2), "float")
         elif t in ("find_image", "click_image", "if_image"):
             self._image_form(action, t)
+        elif t == "wait_image":
+            self._wait_image_form(action)
+        elif t in ("find_color", "click_color", "if_color", "wait_color"):
+            self._color_form(action, t)
+        elif t == "drag":
+            self._drag_form(action)
         elif t == "repeat":
             self._repeat_form(action)
         elif t == "group":
@@ -642,6 +641,216 @@ class GenericScriptUI(tk.Frame):
         self.preview_area = tk.Frame(self.form_frame, bg=c["bg_surface"])
         self.preview_area.pack(fill="both", expand=True, padx=14, pady=8)
         self._show_template_preview(action.get("template", ""))
+
+    def _wait_image_form(self, action):
+        c = self._c
+        tk.Label(self.form_frame, text="模板", bg=c["bg_surface"], fg=c["fg_gray"],
+                 width=14, anchor="w").pack(side="left", padx=(14, 0), pady=3)
+        self.lbl_template = tk.Label(self.form_frame, text=action.get("template", "(未选择)"),
+                                     bg=c["bg_surface"], fg=c["fg_white"], anchor="w")
+        self.lbl_template.pack(side="left", fill="x", expand=True, pady=3)
+        self._form_row("相似度", "threshold", action.get("threshold", 0.85), "float")
+
+        row_btns = tk.Frame(self.form_frame, bg=c["bg_surface"])
+        row_btns.pack(fill="x", padx=14, pady=6)
+        self._btn(row_btns, "截取模板", lambda: self._crop_template(action), "accent", small=True).pack(side="left", padx=2)
+        self._btn(row_btns, "测试识别", lambda: self._test_recognition(action), small=True).pack(side="left", padx=2)
+
+        self._poll_form(action)
+
+        self.preview_area = tk.Frame(self.form_frame, bg=c["bg_surface"])
+        self.preview_area.pack(fill="both", expand=True, padx=14, pady=8)
+        self._show_template_preview(action.get("template", ""))
+
+    def _color_form(self, action, t):
+        c = self._c
+        color_hex = action.get("color", "#43A982")
+        row = tk.Frame(self.form_frame, bg=c["bg_surface"])
+        row.pack(fill="x", padx=14, pady=3)
+        tk.Label(row, text="颜色", bg=c["bg_surface"], fg=c["fg_gray"],
+                 width=14, anchor="w").pack(side="left")
+        try:
+            swatch = tk.Label(row, text="  ", bg=color_hex, relief="groove", bd=1)
+        except tk.TclError:
+            swatch = tk.Label(row, text="  ", bg="#000000")
+        swatch.pack(side="left", padx=(0, 6))
+        self.lbl_color_hex = tk.Label(row, text=color_hex, bg=c["bg_surface"], fg=c["fg_white"])
+        self.lbl_color_hex.pack(side="left")
+        self._btn(row, "从 Roblox 取色", lambda: self._pick_color(action), "accent", small=True).pack(side="left", padx=(8, 0))
+
+        self._form_row("容差", "tolerance", action.get("tolerance", 12), "int")
+
+        region = action.get("region")
+        if region is None:
+            region_text = "整个客户端"
+        else:
+            region_text = (f"({region['x']:.2f},{region['y']:.2f}) "
+                           f"{region['width']:.2f}×{region['height']:.2f}")
+        rrow = tk.Frame(self.form_frame, bg=c["bg_surface"])
+        rrow.pack(fill="x", padx=14, pady=3)
+        tk.Label(rrow, text="搜索区域", bg=c["bg_surface"], fg=c["fg_gray"],
+                 width=14, anchor="w").pack(side="left")
+        tk.Label(rrow, text=region_text, bg=c["bg_surface"], fg=c["fg_white"]).pack(side="left", fill="x", expand=True)
+        self._btn(rrow, "框选区域", lambda: self._pick_region(action), small=True).pack(side="left", padx=2)
+        self._btn(rrow, "整个客户端", lambda: self._clear_region(action), small=True).pack(side="left", padx=2)
+
+        if t == "click_color":
+            self._form_row("执行后等待(秒)", "after_wait", action.get("after_wait", 0.2), "float")
+        if t == "if_color":
+            self._form_btn("向内部添加动作 →", self._add_into_container).pack(anchor="w", padx=14, pady=4)
+        if t == "wait_color":
+            self._poll_form(action)
+
+        self._color_test_btn(action)
+        self.preview_area = tk.Frame(self.form_frame, bg=c["bg_surface"])
+        self.preview_area.pack(fill="both", expand=True, padx=14, pady=8)
+
+    def _poll_form(self, action):
+        c = self._c
+        self._form_row("轮询间隔(秒)", "poll_interval", action.get("poll_interval", 0.5), "float")
+        self._forever_var = tk.BooleanVar(value=action.get("timeout") is None)
+
+        def _toggle():
+            if self._forever_var.get():
+                action["timeout"] = None
+            else:
+                action.setdefault("timeout", 60)
+            self.model.mark_dirty()
+
+        cb = tk.Checkbutton(self.form_frame, text="一直等待 (直到停止)", variable=self._forever_var,
+                            command=_toggle, bg=c["bg_surface"], fg=c["fg_white"],
+                            selectcolor=c["bg_input"], activebackground=c["bg_surface"])
+        cb.pack(anchor="w", padx=14, pady=6)
+        if action.get("timeout") is not None:
+            self._form_row("最长等待(秒)", "timeout", action.get("timeout", 60), "float")
+
+    def _color_test_btn(self, action):
+        self._btn(self.form_frame, "测试识别", lambda: self._test_color(action),
+                  "accent", small=True).pack(anchor="w", padx=14, pady=6)
+
+    def _drag_form(self, action):
+        frm = action.setdefault("from", {"x": 0.3, "y": 0.4})
+        to = action.setdefault("to", {"x": 0.7, "y": 0.4})
+        tk.Label(self.form_frame, text="起点", bg=self._c["bg_surface"], fg=self._c["fg_gray"],
+                 font=("Microsoft YaHei UI", 9, "bold")).pack(anchor="w", padx=14, pady=(8, 2))
+        self._point_row("起点 X", frm, "x")
+        self._point_row("起点 Y", frm, "y")
+        self._form_btn("选择起点", lambda: self._pick_drag_point(frm)).pack(anchor="w", padx=14, pady=3)
+        tk.Label(self.form_frame, text="终点", bg=self._c["bg_surface"], fg=self._c["fg_gray"],
+                 font=("Microsoft YaHei UI", 9, "bold")).pack(anchor="w", padx=14, pady=(8, 2))
+        self._point_row("终点 X", to, "x")
+        self._point_row("终点 Y", to, "y")
+        self._form_btn("选择终点", lambda: self._pick_drag_point(to)).pack(anchor="w", padx=14, pady=3)
+        self._form_row("持续时间(秒)", "duration", action.get("duration", 0.5), "float")
+        self._form_row("执行后等待(秒)", "after_wait", action.get("after_wait", 0.2), "float")
+        self._test_btn(action)
+
+    def _point_row(self, label, point_dict, field):
+        c = self._c
+        fr = tk.Frame(self.form_frame, bg=c["bg_surface"])
+        fr.pack(fill="x", padx=14, pady=3)
+        tk.Label(fr, text=label, bg=c["bg_surface"], fg=c["fg_gray"],
+                 width=14, anchor="w").pack(side="left")
+        var = tk.StringVar(value=str(point_dict.get(field, 0.5)))
+        entry = tk.Entry(fr, textvariable=var, bg=c["bg_input"], fg=c["fg_white"],
+                         insertbackground=c["fg_white"], relief="flat", width=10)
+        entry.pack(side="left", fill="x", expand=True)
+
+        def apply_point(_event=None, _pd=point_dict, _f=field, _v=var):
+            try:
+                _pd[_f] = float(_v.get())
+                self.model.mark_dirty()
+                self._refresh_status()
+            except ValueError:
+                self._log(f"坐标值无效: {_v.get()!r}")
+
+        entry.bind("<FocusOut>", apply_point)
+        entry.bind("<Return>", apply_point)
+
+    def _pick_color(self, action):
+        path_to_reselect = list(self._form_path) if self._form_path is not None else None
+
+        def on_pick(rgb):
+            action["color"] = "#%02X%02X%02X" % rgb
+            self.model.mark_dirty()
+
+            def _refresh():
+                if path_to_reselect is not None:
+                    self._build_form(path_to_reselect)
+                self._refresh_status()
+            self.after_idle(_refresh)
+
+        self.app.pick_color_generic(on_pick)
+
+    def _pick_region(self, action):
+        path_to_reselect = list(self._form_path) if self._form_path is not None else None
+
+        def on_pick(region):
+            action["region"] = region
+            self.model.mark_dirty()
+
+            def _refresh():
+                if path_to_reselect is not None:
+                    self._build_form(path_to_reselect)
+                self._refresh_status()
+            self.after_idle(_refresh)
+
+        self.app.pick_region_generic(on_pick)
+
+    def _clear_region(self, action):
+        action["region"] = None
+        self.model.mark_dirty()
+        self._build_form(self._form_path)
+        self._refresh_status()
+
+    def _pick_drag_point(self, point_dict):
+        path_to_reselect = list(self._form_path) if self._form_path is not None else None
+
+        def on_pick(rx, ry):
+            point_dict["x"] = rx
+            point_dict["y"] = ry
+            self.model.mark_dirty()
+
+            def _refresh():
+                if path_to_reselect is not None:
+                    self._build_form(path_to_reselect)
+                self._refresh_status()
+            self.after_idle(_refresh)
+
+        self.app.pick_coordinate_generic(on_pick)
+
+    def _test_color(self, action):
+        hwnd = self.app.hwnd
+        if not hwnd:
+            messagebox.showwarning("警告", "请先选择目标 Roblox 窗口！", parent=self)
+            return
+        color_hex = action.get("color", "")
+        if not color_hex:
+            messagebox.showinfo("提示", "请先从 Roblox 取色。", parent=self)
+            return
+        try:
+            res = self.model.test_find_color(
+                hwnd, color_hex, int(action.get("tolerance", 12)), action.get("region")
+            )
+            status = "FOUND" if res["found"] else "NOT FOUND"
+            ts = time.strftime("%H:%M:%S") + f".{int(time.time()*1000)%1000:03d}"
+            pos = res.get("position")
+            pos_text = f"({pos[0]:.4f},{pos[1]:.4f})" if pos else "—"
+            self._log(f"测试颜色 [{status}] {color_hex} 位置={pos_text} "
+                      f"count={res['match_count']} @{ts}")
+            for child in self.preview_area.winfo_children():
+                child.destroy()
+            c = self._c
+            fg = "#63cba5" if res["found"] else "#e6b566"
+            tk.Label(self.preview_area, text=f"最近测试: {status}  @ {ts}", bg=c["bg_surface"],
+                     fg=fg, font=("Microsoft YaHei UI", 10, "bold")).pack(anchor="w")
+            actual = res.get("actual_color")
+            actual_text = f"实际像素 RGB{actual}" if actual else "—"
+            tk.Label(self.preview_area, text=f"位置 {pos_text}\n匹配数 {res['match_count']}\n{actual_text}",
+                     bg=c["bg_surface"], fg=c["fg_white"], justify="left").pack(anchor="w", pady=(2, 0))
+        except Exception as e:
+            self._log(f"测试颜色异常: {e}")
+            messagebox.showerror("测试颜色失败", str(e), parent=self)
 
     def _repeat_form(self, action):
         c = self._c

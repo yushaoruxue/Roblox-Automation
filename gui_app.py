@@ -1700,6 +1700,194 @@ class AEAutomationApp:
 
         self.root.after(300, open_overlay)
 
+    # --- 通用取色（复用选点遮罩，点击后抓帧取该像素 RGB） ---
+    def pick_color_generic(self, on_pick):
+        if self.selection_in_progress:
+            self.log("已有选点操作正在进行，已忽略重复请求。")
+            return
+        if not self.hwnd:
+            messagebox.showwarning("警告", "请先在左侧选择目标 Roblox 游戏窗口！")
+            return
+        title = win32gui.GetWindowText(self.hwnd)
+        if "Launcher" in title or "配置器" in title:
+            messagebox.showwarning("警告", "当前窗口为控制软件本身，请切换为 Roblox 游戏客户端！")
+            return
+
+        self.selection_in_progress = True
+
+        def cancel_selection(event=None):
+            self.finish_selection_ui()
+            self.log("已取消取色。")
+
+        def on_click(event, overlay):
+            px, py = win32gui.GetCursorPos()
+            error_message = None
+            overlay_destroyed = False
+            try:
+                cx, cy = win32gui.ScreenToClient(self.hwnd, (px, py))
+                _, _, cw, ch = win32gui.GetClientRect(self.hwnd)
+                if cw <= 0 or ch <= 0:
+                    raise ValueError(f"Roblox 客户区尺寸无效: {cw}x{ch}")
+                if not (0 <= cx < cw and 0 <= cy < ch):
+                    error_message = "点击位置不在所选 Roblox 客户区内。"
+                    return
+                # 先销毁半透明遮罩再抓帧，避免 ImageGrab 抓到遮罩的叠加色。
+                self.finish_selection_ui(overlay)
+                overlay_destroyed = True
+                frame = engine.capture_window(self.hwnd)
+                if frame is None:
+                    raise RuntimeError("抓取画面失败")
+                b, g, r = frame[cy, cx]
+                rgb = (int(r), int(g), int(b))
+                on_pick(rgb)
+                self.log(f"取色: client=({cx},{cy})/{cw}x{ch}, RGB={rgb}")
+            except Exception as e:
+                error_message = str(e)
+            finally:
+                if not overlay_destroyed:
+                    self.finish_selection_ui(overlay)
+                if error_message:
+                    messagebox.showerror("取色失败", error_message)
+
+        def open_overlay():
+            if not self.selection_in_progress:
+                return
+            try:
+                overlay, canvas = self.create_target_overlay(0.3, "crosshair", "black")
+                self.active_selection_overlay = overlay
+                canvas.bind("<Button-1>", lambda event: on_click(event, overlay))
+                overlay.bind("<Escape>", cancel_selection)
+                overlay.bind("<Button-3>", cancel_selection)
+            except Exception as e:
+                self.finish_selection_ui()
+                self.log(f"无法创建取色遮罩: {e}")
+                messagebox.showerror("取色失败", str(e))
+
+        self.root.after(300, open_overlay)
+
+    # --- 通用区域框选（拖框，返回归一化 (x, y, w, h)，不截模板） ---
+    def pick_region_generic(self, on_pick):
+        if self.selection_in_progress:
+            self.log("已有选点操作正在进行，已忽略重复请求。")
+            return
+        if not self.hwnd:
+            messagebox.showwarning("警告", "请先在左侧选择目标 Roblox 游戏窗口！")
+            return
+        title = win32gui.GetWindowText(self.hwnd)
+        if "Launcher" in title or "配置器" in title:
+            messagebox.showwarning("警告", "当前窗口为控制软件本身，请切换为 Roblox 游戏客户端！")
+            return
+
+        self.hide_main_window_for_selection()
+        time.sleep(0.3)
+        try:
+            overlay, canvas = self.create_target_overlay(0.15, "crosshair", "gray")
+        except Exception as e:
+            self.restore_main_window()
+            self.log(f"无法创建区域遮罩: {e}")
+            messagebox.showerror("区域框选失败", str(e))
+            return
+
+        canvas.create_text(
+            16, 24, anchor="w",
+            text="✛ 拖动框选搜索区域（Esc 取消）",
+            fill="#ffff00", font=("Microsoft YaHei", 14, "bold"),
+        )
+
+        start_screen = [None]
+        start_canvas = [None]
+        rect_ids = [None, None]
+        corner_ids = [None]
+        CORNER_LEN = 22
+
+        def _create_corners(x1, y1, x2, y2):
+            ids = []
+            corners = [(x1, y1, 1, 1), (x2, y1, -1, 1), (x1, y2, 1, -1), (x2, y2, -1, -1)]
+            for cx, cy, hx, vy in corners:
+                ids.append(canvas.create_line(cx, cy, cx + hx * CORNER_LEN, cy, fill="#000000", width=6))
+                ids.append(canvas.create_line(cx, cy, cx + hx * CORNER_LEN, cy, fill="#ffffff", width=2))
+                ids.append(canvas.create_line(cx, cy, cx, cy + vy * CORNER_LEN, fill="#000000", width=6))
+                ids.append(canvas.create_line(cx, cy, cx, cy + vy * CORNER_LEN, fill="#ffffff", width=2))
+            return ids
+
+        def _update_corners(ids, x1, y1, x2, y2):
+            corners = [(x1, y1, 1, 1), (x2, y1, -1, 1), (x1, y2, 1, -1), (x2, y2, -1, -1)]
+            for i, (cx, cy, hx, vy) in enumerate(corners):
+                canvas.coords(ids[i * 4 + 0], cx, cy, cx + hx * CORNER_LEN, cy)
+                canvas.coords(ids[i * 4 + 1], cx, cy, cx + hx * CORNER_LEN, cy)
+                canvas.coords(ids[i * 4 + 2], cx, cy, cx, cy + vy * CORNER_LEN)
+                canvas.coords(ids[i * 4 + 3], cx, cy, cx, cy + vy * CORNER_LEN)
+
+        def finish_region(gx1, gy1, gx2, gy2):
+            try:
+                win_left, win_top = win32gui.ClientToScreen(self.hwnd, (0, 0))
+                _, _, cw, ch = win32gui.GetClientRect(self.hwnd)
+                rx1 = gx1 - win_left
+                ry1 = gy1 - win_top
+                rx2 = gx2 - win_left
+                ry2 = gy2 - win_top
+                if rx1 < 0 or ry1 < 0 or rx2 > cw or ry2 > ch:
+                    raise ValueError("框选区域不完全位于 Roblox 客户区")
+                if rx2 - rx1 < 5 or ry2 - ry1 < 5:
+                    raise ValueError("框选区域过小。")
+                region = {
+                    "x": round(rx1 / cw, 4),
+                    "y": round(ry1 / ch, 4),
+                    "width": round((rx2 - rx1) / cw, 4),
+                    "height": round((ry2 - ry1) / ch, 4),
+                }
+                on_pick(region)
+                self.log(f"区域: client=({rx1},{ry1})-({rx2},{ry2})/{cw}x{ch}")
+            except Exception as e:
+                self.log(f"区域框选失败: {e}")
+                messagebox.showerror("区域框选失败", str(e))
+            finally:
+                self.restore_main_window()
+
+        def cancel_region(event=None):
+            try:
+                overlay.destroy()
+            finally:
+                self.restore_main_window()
+                self.log("已取消区域框选。")
+
+        def on_press(event):
+            start_screen[0] = win32gui.GetCursorPos()
+            start_canvas[0] = (event.x, event.y)
+            rect_ids[0] = canvas.create_rectangle(event.x, event.y, event.x + 1, event.y + 1,
+                                                  outline="#000000", width=5, fill="")
+            rect_ids[1] = canvas.create_rectangle(event.x, event.y, event.x + 1, event.y + 1,
+                                                  outline="#ffffff", width=2, fill="")
+            corner_ids[0] = _create_corners(event.x, event.y, event.x, event.y)
+
+        def on_drag(event):
+            if start_canvas[0] is None:
+                return
+            sx, sy = start_canvas[0]
+            x1, y1 = min(sx, event.x), min(sy, event.y)
+            x2, y2 = max(sx, event.x), max(sy, event.y)
+            canvas.coords(rect_ids[0], x1, y1, x2, y2)
+            canvas.coords(rect_ids[1], x1, y1, x2, y2)
+            _update_corners(corner_ids[0], x1, y1, x2, y2)
+
+        def on_release(event):
+            if start_screen[0] is None:
+                return
+            end_x, end_y = win32gui.GetCursorPos()
+            gx1, gy1 = start_screen[0]
+            gx2, gy2 = max(gx1, end_x), max(gy1, end_y)
+            gx1, gy1 = min(gx1, end_x), min(gy1, end_y)
+            canvas.unbind("<ButtonPress-1>")
+            canvas.unbind("<B1-Motion>")
+            canvas.unbind("<ButtonRelease-1>")
+            overlay.destroy()
+            finish_region(gx1, gy1, gx2, gy2)
+
+        canvas.bind("<ButtonPress-1>", on_press)
+        canvas.bind("<B1-Motion>", on_drag)
+        canvas.bind("<ButtonRelease-1>", on_release)
+        overlay.bind("<Escape>", cancel_region)
+
     # --- 通用模板截取（复用框选遮罩，结果经回调返回） ---
     def crop_template_generic(self, on_crop):
         if not self.hwnd:

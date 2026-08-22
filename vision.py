@@ -16,6 +16,7 @@ import os
 import json
 
 import cv2
+import numpy as np
 
 
 def load_template_click_anchor(templates_dir, filename, log=None):
@@ -88,3 +89,67 @@ def match_template_location(full_img, template_img, threshold=0.85,
             diagnostics["confidence"],
         )
     return None
+
+
+def hex_to_rgb(hex_color):
+    """Convert ``#RRGGBB`` (or ``RRGGBB``) to an (r, g, b) tuple of ints."""
+    h = str(hex_color).strip().lstrip("#")
+    if len(h) != 6:
+        raise ValueError(f"无效颜色: {hex_color!r}")
+    try:
+        return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+    except ValueError:
+        raise ValueError(f"无效颜色: {hex_color!r}")
+
+
+def find_color(frame, target_color, tolerance, region=None):
+    """Find pixels matching ``target_color`` (RGB tuple) within a per-channel
+    tolerance. ``region`` is either None (full frame) or an ``(x, y, w, h)``
+    tuple of client-normalized floats in [0, 1].
+
+    Returns a dict: ``found`` (bool), ``position`` (normalized centroid of all
+    matches), ``match_count`` (int), ``actual_color`` (RGB of first match).
+    Never raises on a miss — a miss is ``found=False``, not an error.
+    """
+    if frame is None:
+        raise ValueError("识别图像为空")
+    h, w = frame.shape[:2]
+    tr, tg, tb = target_color  # RGB
+
+    if region is not None:
+        rx, ry, rw, rh = region
+        x0 = max(0, min(w, int(rx * w)))
+        y0 = max(0, min(h, int(ry * h)))
+        x1 = max(0, min(w, int((rx + rw) * w)))
+        y1 = max(0, min(h, int((ry + rh) * h)))
+    else:
+        x0, y0, x1, y1 = 0, 0, w, h
+
+    roi = frame[y0:y1, x0:x1]
+    if roi.size == 0:
+        return {"found": False, "position": None, "match_count": 0,
+                "actual_color": None}
+
+    # frame is BGR (OpenCV). Compare per-channel against the RGB target.
+    B = roi[:, :, 0].astype(int)
+    G = roi[:, :, 1].astype(int)
+    R = roi[:, :, 2].astype(int)
+    mask = ((np.abs(R - tr) <= tolerance)
+            & (np.abs(G - tg) <= tolerance)
+            & (np.abs(B - tb) <= tolerance))
+    count = int(mask.sum())
+    if count == 0:
+        return {"found": False, "position": None, "match_count": 0,
+                "actual_color": None}
+
+    ys, xs = np.where(mask)
+    cx = float(xs.mean()) + x0
+    cy = float(ys.mean()) + y0
+    first_bgr = frame[ys[0] + y0, xs[0] + x0]
+    actual_color = (int(first_bgr[2]), int(first_bgr[1]), int(first_bgr[0]))
+    return {
+        "found": True,
+        "position": (cx / max(1, w - 1), cy / max(1, h - 1)),
+        "match_count": count,
+        "actual_color": actual_color,
+    }
