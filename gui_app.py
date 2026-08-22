@@ -942,6 +942,7 @@ class AEAutomationApp:
             return
         self.root.deiconify()
         self.root.update_idletasks()
+        self.root.update()  # 强制完整重绘，避免被 hide/SetWindowPos 后出现白屏
         hwnd = self.get_main_window_hwnd()
         left, top, right, bottom = self.get_safe_restore_rect()
         win32gui.SetWindowPos(

@@ -317,6 +317,7 @@ class GenericScriptUI(tk.Frame):
     def _rebuild_tree(self):
         self.tree.delete(*self.tree.get_children())
         self._tree_paths = {}
+        self._path_iids = {}
         self._iid_counter = 0
         for i, act in enumerate(self.model.actions):
             self._insert_node("", [i], act)
@@ -324,18 +325,31 @@ class GenericScriptUI(tk.Frame):
     def _insert_node(self, parent_iid, path, act):
         iid = self._make_iid()
         self.tree.insert(parent_iid, "end", iid=iid, text=user_actions.action_summary(act))
-        self._tree_paths[iid] = tuple(path)
+        tpath = tuple(path)
+        self._tree_paths[iid] = tpath
+        self._path_iids[tpath] = iid
         children = user_actions.child_container(act)
         if act.get("type") == "if_image":
             for key in ("then", "else"):
                 branch_iid = self._make_iid()
                 self.tree.insert(iid, "end", iid=branch_iid, text=key.upper())
-                self._tree_paths[branch_iid] = tuple(path + [key])
+                bpath = tuple(path + [key])
+                self._tree_paths[branch_iid] = bpath
+                self._path_iids[bpath] = branch_iid
                 for j, child in enumerate(act.get(key, [])):
                     self._insert_node(branch_iid, path + [key, j], child)
         elif "actions" in children:
             for j, child in enumerate(act.get("actions", [])):
                 self._insert_node(iid, path + ["actions", j], child)
+
+    def _reselect_path(self, path):
+        """重新选中路径对应的节点（重建 tree 后恢复表单），无则忽略。"""
+        if not path:
+            return
+        iid = self._path_iids.get(tuple(path))
+        if iid:
+            self.tree.selection_set(iid)
+            self.tree.see(iid)
 
     def _selected_path(self):
         sel = self.tree.selection()
@@ -362,12 +376,14 @@ class GenericScriptUI(tk.Frame):
         action = user_actions.new_action(atype)
         target = self._insert_target()
         sel = self._selected_path()
-        if sel and isinstance(sel[-1], int) and not self.model.get_action(sel).get("type") in ("if_image", "repeat", "group"):
+        if sel and isinstance(sel[-1], int) and self.model.get_action(sel).get("type") not in ("if_image", "repeat", "group"):
             index = sel[-1] + 1
         else:
             index = None
         self.model.insert_action(target, action, index)
         self._rebuild_tree()
+        new_index = index if index is not None else len(self.model.get_list(target)) - 1
+        self._reselect_path(list(target) + [new_index])
         self._refresh_status()
 
     def _on_library_double(self, event):
@@ -702,7 +718,7 @@ class GenericScriptUI(tk.Frame):
                 self.model.mark_dirty()
                 self._refresh_status()
                 self._rebuild_tree()
-                self._build_form(self._form_path)
+                self._reselect_path(self._form_path)  # 重建后恢复选择与表单
                 self._log(f"模板已保存: {rel}（{cropped.shape[1]}×{cropped.shape[0]}）")
             except Exception as e:
                 self._log(f"模板保存失败: {e}")
