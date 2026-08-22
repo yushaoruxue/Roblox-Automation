@@ -1729,31 +1729,34 @@ class AEAutomationApp:
 
         start_screen = [None]
         start_canvas = [None]
-        rect_id = [None]
-        corner_ids = [None]  # 8 条线：4 个角 × (水平 + 垂直)
-
+        rect_ids = [None, None]   # [外层黑色, 内层白色] 双层描边
+        corner_ids = [None]        # 16 条线：4 角 × (水平+垂直) × (外黑+内白)
         CORNER_LEN = 22
 
         def _create_corners(x1, y1, x2, y2):
-            """在 (x1,y1)..(x2,y2) 矩形四角各画一段 L 型括号，返回 8 个 line id。"""
+            """四角各画 2 段 L（黑外 + 白内），返回 16 个 line id。"""
             ids = []
-            # 四个角：(corner_x, corner_y, h_dir, v_dir)  h_dir/v_dir = +1 向右下外延，-1 向左上外延
             corners = [
-                (x1, y1, +1, +1),  # top-left → 水平向右、垂直向下
-                (x2, y1, -1, +1),  # top-right → 水平向左、垂直向下
-                (x1, y2, +1, -1),  # bottom-left → 水平向右、垂直向上
-                (x2, y2, -1, -1),  # bottom-right → 水平向左、垂直向上
+                (x1, y1, +1, +1),  # top-left
+                (x2, y1, -1, +1),  # top-right
+                (x1, y2, +1, -1),  # bottom-left
+                (x2, y2, -1, -1),  # bottom-right
             ]
             for cx, cy, hx, vy in corners:
-                h = canvas.create_line(cx, cy, cx + hx * CORNER_LEN, cy,
-                                       fill="#00ff41", width=4)
-                v = canvas.create_line(cx, cy, cx, cy + vy * CORNER_LEN,
-                                       fill="#00ff41", width=4)
-                ids.extend([h, v])
+                # 黑色外层（粗）
+                h_black = canvas.create_line(cx, cy, cx + hx * CORNER_LEN, cy,
+                                              fill="#000000", width=6)
+                v_black = canvas.create_line(cx, cy, cx, cy + vy * CORNER_LEN,
+                                              fill="#000000", width=6)
+                # 白色内层（细），叠在黑色中间形成光晕
+                h_white = canvas.create_line(cx, cy, cx + hx * CORNER_LEN, cy,
+                                              fill="#ffffff", width=2)
+                v_white = canvas.create_line(cx, cy, cx, cy + vy * CORNER_LEN,
+                                              fill="#ffffff", width=2)
+                ids.extend([h_black, h_white, v_black, v_white])
             return ids
 
         def _update_corners(ids, x1, y1, x2, y2):
-            """按新矩形重定位 8 条 L 括号线。"""
             corners = [
                 (x1, y1, +1, +1),
                 (x2, y1, -1, +1),
@@ -1761,8 +1764,11 @@ class AEAutomationApp:
                 (x2, y2, -1, -1),
             ]
             for i, (cx, cy, hx, vy) in enumerate(corners):
-                canvas.coords(ids[i * 2], cx, cy, cx + hx * CORNER_LEN, cy)
-                canvas.coords(ids[i * 2 + 1], cx, cy, cx, cy + vy * CORNER_LEN)
+                # 每个角占 4 个 id：黑横 / 白横 / 黑纵 / 白纵
+                canvas.coords(ids[i * 4 + 0], cx, cy, cx + hx * CORNER_LEN, cy)
+                canvas.coords(ids[i * 4 + 1], cx, cy, cx + hx * CORNER_LEN, cy)
+                canvas.coords(ids[i * 4 + 2], cx, cy, cx, cy + vy * CORNER_LEN)
+                canvas.coords(ids[i * 4 + 3], cx, cy, cx, cy + vy * CORNER_LEN)
 
         def finish_crop(gx1, gy1, gx2, gy2):
             try:
@@ -1804,12 +1810,15 @@ class AEAutomationApp:
         def on_press(event):
             start_screen[0] = win32gui.GetCursorPos()
             start_canvas[0] = (event.x, event.y)
-            # 亮绿粗描边 + 内部细对比线，任何背景都醒目
-            rect_id[0] = canvas.create_rectangle(
+            # 黑外 + 白内 双层描边：亮暗背景都极醒目（解决浅色背景下单一颜色看不清的问题）
+            rect_ids[0] = canvas.create_rectangle(
                 event.x, event.y, event.x + 1, event.y + 1,
-                outline="#00ff41", width=4, fill="",
+                outline="#000000", width=5, fill="",
             )
-            # 四个角的 L 型括号（截图工具标准样式）
+            rect_ids[1] = canvas.create_rectangle(
+                event.x, event.y, event.x + 1, event.y + 1,
+                outline="#ffffff", width=2, fill="",
+            )
             corner_ids[0] = _create_corners(event.x, event.y, event.x, event.y)
 
         def on_drag(event):
@@ -1819,7 +1828,8 @@ class AEAutomationApp:
             ex, ey = event.x, event.y
             x1, y1 = min(sx, ex), min(sy, ey)
             x2, y2 = max(sx, ex), max(sy, ey)
-            canvas.coords(rect_id[0], x1, y1, x2, y2)
+            canvas.coords(rect_ids[0], x1, y1, x2, y2)
+            canvas.coords(rect_ids[1], x1, y1, x2, y2)
             _update_corners(corner_ids[0], x1, y1, x2, y2)
 
         def on_release(event):
