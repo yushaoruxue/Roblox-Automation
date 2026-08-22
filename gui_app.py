@@ -1730,6 +1730,39 @@ class AEAutomationApp:
         start_screen = [None]
         start_canvas = [None]
         rect_id = [None]
+        corner_ids = [None]  # 8 条线：4 个角 × (水平 + 垂直)
+
+        CORNER_LEN = 22
+
+        def _create_corners(x1, y1, x2, y2):
+            """在 (x1,y1)..(x2,y2) 矩形四角各画一段 L 型括号，返回 8 个 line id。"""
+            ids = []
+            # 四个角：(corner_x, corner_y, h_dir, v_dir)  h_dir/v_dir = +1 向右下外延，-1 向左上外延
+            corners = [
+                (x1, y1, +1, +1),  # top-left → 水平向右、垂直向下
+                (x2, y1, -1, +1),  # top-right → 水平向左、垂直向下
+                (x1, y2, +1, -1),  # bottom-left → 水平向右、垂直向上
+                (x2, y2, -1, -1),  # bottom-right → 水平向左、垂直向上
+            ]
+            for cx, cy, hx, vy in corners:
+                h = canvas.create_line(cx, cy, cx + hx * CORNER_LEN, cy,
+                                       fill="#00ff41", width=4)
+                v = canvas.create_line(cx, cy, cx, cy + vy * CORNER_LEN,
+                                       fill="#00ff41", width=4)
+                ids.extend([h, v])
+            return ids
+
+        def _update_corners(ids, x1, y1, x2, y2):
+            """按新矩形重定位 8 条 L 括号线。"""
+            corners = [
+                (x1, y1, +1, +1),
+                (x2, y1, -1, +1),
+                (x1, y2, +1, -1),
+                (x2, y2, -1, -1),
+            ]
+            for i, (cx, cy, hx, vy) in enumerate(corners):
+                canvas.coords(ids[i * 2], cx, cy, cx + hx * CORNER_LEN, cy)
+                canvas.coords(ids[i * 2 + 1], cx, cy, cx, cy + vy * CORNER_LEN)
 
         def finish_crop(gx1, gy1, gx2, gy2):
             try:
@@ -1771,16 +1804,23 @@ class AEAutomationApp:
         def on_press(event):
             start_screen[0] = win32gui.GetCursorPos()
             start_canvas[0] = (event.x, event.y)
-            # 明显的黄色高亮框
+            # 亮绿粗描边 + 内部细对比线，任何背景都醒目
             rect_id[0] = canvas.create_rectangle(
                 event.x, event.y, event.x + 1, event.y + 1,
-                outline="#ffff00", width=3,
+                outline="#00ff41", width=4, fill="",
             )
+            # 四个角的 L 型括号（截图工具标准样式）
+            corner_ids[0] = _create_corners(event.x, event.y, event.x, event.y)
 
         def on_drag(event):
-            if start_canvas[0] is not None:
-                sx, sy = start_canvas[0]
-                canvas.coords(rect_id[0], sx, sy, event.x, event.y)
+            if start_canvas[0] is None:
+                return
+            sx, sy = start_canvas[0]
+            ex, ey = event.x, event.y
+            x1, y1 = min(sx, ex), min(sy, ey)
+            x2, y2 = max(sx, ex), max(sy, ey)
+            canvas.coords(rect_id[0], x1, y1, x2, y2)
+            _update_corners(corner_ids[0], x1, y1, x2, y2)
 
         def on_release(event):
             if start_screen[0] is None:
