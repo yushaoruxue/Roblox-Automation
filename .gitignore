@@ -1,0 +1,19 @@
+# Python / runtime artifacts
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Generated debug/runtime output (not source)
+diagnostics/
+automation.log
+
+# Agent workspace data (not project source)
+.workbuddy/
+
+# Auto-generated backup files
+*.bak
+
+# Experimental lab (research scripts + captured frame evidence), kept out of
+# the AE production baseline to avoid committing multi-MB frame captures.
+experiments/

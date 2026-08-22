@@ -1,0 +1,5 @@
+opencv-python>=4.6.0
+Pillow>=9.0.0
+pywin32>=300
+numpy>=1.21.0
+pydirectinput>=1.0.4
