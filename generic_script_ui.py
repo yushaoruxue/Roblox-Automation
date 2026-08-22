@@ -491,9 +491,8 @@ class GenericScriptUI(tk.Frame):
 
         row_btns = tk.Frame(self.form_frame, bg=c["bg_surface"])
         row_btns.pack(fill="x", padx=14, pady=6)
-        self._btn(row_btns, "截取模板", lambda: self._crop_template(action), small=True).pack(side="left", padx=2)
-        self._btn(row_btns, "获取当前画面", self._preview_current_frame, small=True).pack(side="left", padx=2)
-        self._btn(row_btns, "测试识别", lambda: self._test_recognition(action), "accent", small=True).pack(side="left", padx=2)
+        self._btn(row_btns, "截取模板", lambda: self._crop_template(action), "accent", small=True).pack(side="left", padx=2)
+        self._btn(row_btns, "测试识别", lambda: self._test_recognition(action), small=True).pack(side="left", padx=2)
 
         # template preview + last test result
         self.preview_area = tk.Frame(self.form_frame, bg=c["bg_surface"])
@@ -679,14 +678,14 @@ class GenericScriptUI(tk.Frame):
                 return
 
         def on_crop(cropped, offset_x, offset_y):
-            name = simpledialog.askstring("保存模板", "输入模板文件名（例如 replay.png）：", parent=self)
-            if not name:
-                return
-            if not name.lower().endswith(".png"):
-                name += ".png"
-            rel = self.model.template_rel_path(name)
-            abs_path = os.path.join(self.model.store.script_dir(self.model.script_id), rel)
             try:
+                assets = self.model.ensure_assets_dir()
+                # 自动生成模板文件名，不再要求用户手动输入
+                n = 1
+                while os.path.exists(os.path.join(assets, f"tpl_{n}.png")):
+                    n += 1
+                rel = self.model.template_rel_path(f"tpl_{n}.png")
+                abs_path = os.path.join(self.model.store.script_dir(self.model.script_id), rel)
                 cv2.imwrite(abs_path, cropped)
                 meta = {
                     "version": 1,
@@ -702,7 +701,7 @@ class GenericScriptUI(tk.Frame):
                 self._refresh_status()
                 self._rebuild_tree()
                 self._build_form(self._form_path)
-                self._log(f"模板已保存: {rel}，点击锚点=({offset_x:.4f},{offset_y:.4f})")
+                self._log(f"模板已保存: {rel}（{cropped.shape[1]}×{cropped.shape[0]}）")
             except Exception as e:
                 self._log(f"模板保存失败: {e}")
                 messagebox.showerror("模板保存失败", str(e), parent=self)

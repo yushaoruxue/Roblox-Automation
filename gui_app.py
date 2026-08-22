@@ -1712,19 +1712,25 @@ class AEAutomationApp:
         self.hide_main_window_for_selection()
         time.sleep(0.3)
         try:
-            overlay, canvas = self.create_target_overlay(0.2, "cross", "gray")
+            overlay, canvas = self.create_target_overlay(0.15, "crosshair", "gray")
         except Exception as e:
             self.restore_main_window()
             self.log(f"无法创建裁剪遮罩: {e}")
             messagebox.showerror("裁剪失败", str(e))
             return
 
+        # 顶部提示文字，明确告诉用户当前正在框选
+        canvas.create_text(
+            16, 24, anchor="w",
+            text="✛ 按住鼠标左键拖动，框选要识别的区域（Esc 取消）",
+            fill="#ffff00", font=("Microsoft YaHei", 14, "bold"),
+        )
+
         start_screen = [None]
         start_canvas = [None]
         rect_id = [None]
-        pending_crop = [None]
 
-        def finish_crop(gx1, gy1, gx2, gy2, anchor_x, anchor_y):
+        def finish_crop(gx1, gy1, gx2, gy2):
             try:
                 win_left, win_top = win32gui.ClientToScreen(self.hwnd, (0, 0))
                 _, _, cw, ch = win32gui.GetClientRect(self.hwnd)
@@ -1746,9 +1752,8 @@ class AEAutomationApp:
                 if cropped.size == 0:
                     raise ValueError("截图区域宽度或高度过小。")
 
-                offset_x = (anchor_x - gx1) / max(1, (gx2 - gx1) - 1)
-                offset_y = (anchor_y - gy1) / max(1, (gy2 - gy1) - 1)
-                on_crop(cropped, offset_x, offset_y)
+                # 默认以框选区域中心作为点击锚点（后续可再调整）
+                on_crop(cropped, 0.5, 0.5)
             except Exception as e:
                 self.log(f"模板截取失败: {e}")
                 messagebox.showerror("模板截取失败", str(e))
@@ -1763,19 +1768,21 @@ class AEAutomationApp:
                 self.log("已取消模板截取。")
 
         def on_press(event):
-            if pending_crop[0] is not None:
-                return
             start_screen[0] = win32gui.GetCursorPos()
             start_canvas[0] = (event.x, event.y)
-            rect_id[0] = canvas.create_rectangle(event.x, event.y, event.x + 1, event.y + 1, outline="red", width=2)
+            # 明显的黄色高亮框
+            rect_id[0] = canvas.create_rectangle(
+                event.x, event.y, event.x + 1, event.y + 1,
+                outline="#ffff00", width=3,
+            )
 
         def on_drag(event):
-            if start_canvas[0] is not None and pending_crop[0] is None:
+            if start_canvas[0] is not None:
                 sx, sy = start_canvas[0]
                 canvas.coords(rect_id[0], sx, sy, event.x, event.y)
 
         def on_release(event):
-            if start_screen[0] is None or pending_crop[0] is not None:
+            if start_screen[0] is None:
                 return
             end_x, end_y = win32gui.GetCursorPos()
             x1, y1 = start_screen[0]
@@ -1786,24 +1793,8 @@ class AEAutomationApp:
             if gx2 - gx1 < 20 or gy2 - gy1 < 10:
                 messagebox.showerror("裁剪区域过小", "请拖动框选一个至少 20×10 像素的识别区域。")
                 return
-            pending_crop[0] = (gx1, gy1, gx2, gy2)
-            canvas.unbind("<ButtonPress-1>")
-            canvas.unbind("<B1-Motion>")
-            canvas.unbind("<ButtonRelease-1>")
-            canvas.config(cursor="hand2")
-
-            def on_anchor_click(anchor_event):
-                anchor_screen_x, anchor_screen_y = win32gui.GetCursorPos()
-                crop_x1, crop_y1, crop_x2, crop_y2 = pending_crop[0]
-                if not (crop_x1 <= anchor_screen_x < crop_x2 and crop_y1 <= anchor_screen_y < crop_y2):
-                    self.log(f"点击锚点不在识别区域内: ({anchor_screen_x},{anchor_screen_y})")
-                    messagebox.showerror("点击点无效", "实际点击点必须位于刚才框选的识别区域内部。")
-                    return
-                canvas.unbind("<Button-1>")
-                overlay.destroy()
-                finish_crop(crop_x1, crop_y1, crop_x2, crop_y2, anchor_screen_x, anchor_screen_y)
-
-            canvas.bind("<Button-1>", on_anchor_click)
+            overlay.destroy()
+            finish_crop(gx1, gy1, gx2, gy2)
 
         canvas.bind("<ButtonPress-1>", on_press)
         canvas.bind("<B1-Motion>", on_drag)
