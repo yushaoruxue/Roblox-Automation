@@ -804,13 +804,22 @@ class GenericScriptUI(tk.Frame):
             messagebox.showwarning("警告", "请先选择目标 Roblox 窗口！", parent=self)
             return
 
+        path_to_reselect = list(self._form_path) if self._form_path is not None else None
+
         def on_pick(rx, ry):
             action["x"] = rx
             action["y"] = ry
             self.model.mark_dirty()
-            self._refresh_status()
-            self._rebuild_tree()
-            self._build_form(self._form_path)
+            # 注意：on_pick 在主窗口被 overlay 隐藏时调用，此刻直接操作
+            # self.tree 会拿到 None children 抛 'NoneType is not iterable'。
+            # 用 after_idle 推迟到 finish_selection_ui 恢复主窗口后再重建。
+            def _refresh_after_pick():
+                self._rebuild_tree()
+                if path_to_reselect is not None:
+                    self._reselect_path(path_to_reselect)
+                self._refresh_status()
+                self._log(f"已记录坐标: ({rx:.4f}, {ry:.4f})")
+            self.after_idle(_refresh_after_pick)
 
         self.app.pick_coordinate_generic(on_pick)
 
