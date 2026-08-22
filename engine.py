@@ -11,6 +11,8 @@ import cv2
 import pydirectinput
 from PIL import ImageGrab
 
+import actions
+
 # 限制 pydirectinput 动作间隔，设为 0.01 避免内置延迟，由我们自己精准控制
 pydirectinput.PAUSE = 0.01
 _ACTION_LOCK = threading.Lock()
@@ -237,9 +239,44 @@ def _set_physical_input_blocked(blocked):
 
 
 def run_action_sequence(hwnd, steps, start_click_rx=None, start_click_ry=None, log_callback=None):
-    """
-    串行执行按键和点击。该函数只保证 Windows 坐标、焦点及输入调用成功，
-    不声称生成硬件 Raw Input，也不保证目标程序一定接受合成输入。
+    """旧 AE 兼容包装器。保留旧契约（key 仅 1..6、合法 rx/ry），内部把旧步骤
+    编译为通用 actions 并交给 run_input_actions 执行。对外函数名/参数/返回值不变。"""
+    try:
+        for index, step in enumerate(steps):
+            key = str(step.get("key", "")).strip()
+            if key not in {"1", "2", "3", "4", "5", "6"}:
+                raise ValueError(f"步骤 {index + 1} 的按键无效: {key!r}")
+            relative_to_screen(hwnd, step.get("rx"), step.get("ry"))
+        if start_click_rx is not None or start_click_ry is not None:
+            if start_click_rx is None or start_click_ry is None:
+                raise ValueError("开始按钮必须同时提供 rx 和 ry")
+            relative_to_screen(hwnd, start_click_rx, start_click_ry)
+    except Exception as e:
+        _emit(f"[Engine] 动作序列执行异常: {e}", log_callback)
+        return False
+
+    compiled = actions.compile_legacy_steps(steps, start_click_rx, start_click_ry)
+    _emit(f"[Actions] compiled legacy steps: {len(steps)} steps -> {len(compiled)} actions", log_callback)
+    result = run_input_actions(hwnd, compiled, log_callback=log_callback)
+    if result and (start_click_rx is not None or start_click_ry is not None):
+        client_x, client_y, screen_x, screen_y, width, height = relative_to_screen(
+            hwnd, start_click_rx, start_click_ry
+        )
+        _emit(
+            f"[Engine] 已点击开始按钮: client=({client_x},{client_y})/"
+            f"{width}x{height}, screen=({screen_x},{screen_y}), "
+            "physical_lock=keyboard+mouse",
+            log_callback,
+        )
+    return result
+
+
+def run_input_actions(hwnd, actions_list, log_callback=None):
+    """执行一个短暂的、需要真实前台输入的输入会话，只处理 key / click / wait。
+
+    通用执行器：不包含任何业务语义，也不限制按键的取值范围。继承旧执行路径已
+    真实验证的会话行为：动作锁、全量预校验、保存/恢复前台与光标、全程输入锁定、
+    置顶目标窗口、BetterClick（+1/-1 微移）与遮挡检查。
     """
     if not _ACTION_LOCK.acquire(blocking=False):
         _emit("[Engine] 已有动作序列正在执行，本次请求已拒绝，防止多个测试互相抢焦点。", log_callback)
@@ -247,36 +284,22 @@ def run_action_sequence(hwnd, steps, start_click_rx=None, start_click_ry=None, l
 
     orig_hwnd = None
     orig_pos = None
-    sequence_ok = False
-    session_input_blocked = False
+    session_ok = False
     foreground_attempted = False
     try:
         if not win32gui.IsWindow(hwnd):
             _emit(f"[Engine] 目标窗口句柄无效: {hwnd}", log_callback)
             return False
 
-        # 在改变焦点前完成全部坐标校验，避免中途才发现越界。
-        checked_steps = []
-        for index, step in enumerate(steps):
-            key = str(step.get("key", "")).strip()
-            if key not in {"1", "2", "3", "4", "5", "6"}:
-                raise ValueError(f"步骤 {index + 1} 的按键无效: {key!r}")
-            point = relative_to_screen(hwnd, step.get("rx"), step.get("ry"))
-            checked_steps.append((step, key, point))
-
-        checked_start = None
-        if start_click_rx is not None or start_click_ry is not None:
-            if start_click_rx is None or start_click_ry is None:
-                raise ValueError("开始按钮必须同时提供 rx 和 ry")
-            checked_start = relative_to_screen(hwnd, start_click_rx, start_click_ry)
+        # 在改变焦点前完成全部动作校验，避免中途才发现非法输入。
+        checked = actions.validate_actions(actions_list)
 
         orig_hwnd = win32gui.GetForegroundWindow()
         orig_pos = win32gui.GetCursorPos()
 
         # 必须在 Roblox 获得前台焦点前锁定。旧实现只在鼠标点击阶段锁定，
         # 用户键盘会在数字键发送前和步骤等待期间进入游戏。
-        session_input_blocked = _set_physical_input_blocked(True)
-        if not session_input_blocked:
+        if not _set_physical_input_blocked(True):
             _emit(
                 "[Engine] 无法锁定物理键盘和鼠标，已取消动作序列；"
                 "请确认程序以管理员身份运行。",
@@ -293,100 +316,56 @@ def run_action_sequence(hwnd, steps, start_click_rx=None, start_click_ry=None, l
             return False
         time.sleep(0.15)
 
-        for index, (step, key, point) in enumerate(checked_steps):
-            if win32gui.GetForegroundWindow() != hwnd:
-                _emit(f"[Engine] 步骤 {index + 1} 前 Roblox 已失去焦点，序列中止。", log_callback)
-                return False
-
-            # 清除上一次失败测试可能残留的幽灵部署状态，避免再次按相同数字键时切换/取消选择。
-            if not _press_key_held("z", 0.05):
-                _emit(f"[Engine] 步骤 {index + 1} 的 Z 重置键发送失败，序列中止。", log_callback)
-                return False
-            time.sleep(0.1)
-
-            key_sent = _press_key_held(key, 0.06)
-            if not key_sent:
-                _emit(f"[Engine] 步骤 {index + 1} 的按键 {key!r} 发送失败，序列中止。", log_callback)
-                return False
-            time.sleep(0.25)
-
-            client_x, client_y, screen_x, screen_y, width, height = point
-            moved, actual_x, actual_y = _move_and_verify(screen_x, screen_y)
-            if not moved:
+        for index, act in enumerate(checked):
+            atype = act["type"]
+            if atype == "key":
+                if win32gui.GetForegroundWindow() != hwnd:
+                    _emit(f"[Engine] 动作 {index + 1} 前 Roblox 已失去焦点，序列中止。", log_callback)
+                    return False
+                if not _press_key_held(act["key"], act["hold_seconds"]):
+                    _emit(f"[Engine] 动作 {index + 1} 的按键 {act['key']!r} 发送失败，序列中止。", log_callback)
+                    return False
+            elif atype == "click":
+                client_x, client_y, screen_x, screen_y, width, height = relative_to_screen(
+                    hwnd, act["x"], act["y"]
+                )
+                moved, actual_x, actual_y = _move_and_verify(screen_x, screen_y)
+                if not moved:
+                    _emit(
+                        f"[Engine] 光标未到达目标，期望=({screen_x},{screen_y})，"
+                        f"实际=({actual_x},{actual_y})，序列中止。",
+                        log_callback,
+                    )
+                    return False
+                if win32gui.GetForegroundWindow() != hwnd:
+                    _emit(f"[Engine] 动作 {index + 1} 点击前 Roblox 已失去焦点，序列中止。", log_callback)
+                    return False
+                hits_target, hit_hwnd, root_hwnd = _point_hits_window(hwnd, screen_x, screen_y)
+                if not hits_target:
+                    _emit(
+                        f"[Engine] 目标点被其他窗口遮挡或句柄不匹配：point=({screen_x},{screen_y})，"
+                        f"hit={hit_hwnd}，root={root_hwnd}，expected={hwnd}。",
+                        log_callback,
+                    )
+                    return False
+                # 部署键固定为鼠标左键。BetterClick 先用相对微移刷新游戏内
+                # 光标状态，再发送一次左键点击。
+                _click_current_position()
                 _emit(
-                    f"[Engine] 光标未到达目标，期望=({screen_x},{screen_y})，"
-                    f"实际=({actual_x},{actual_y})，序列中止。",
+                    f"[Engine] click: client=({client_x},{client_y})/"
+                    f"{width}x{height}, screen=({screen_x},{screen_y}), "
+                    "confirm=BetterClick, physical_lock=keyboard+mouse",
                     log_callback,
                 )
-                return False
+            elif atype == "wait":
+                time.sleep(act["seconds"])
+            else:
+                raise ValueError(f"动作 {index + 1} 的类型无效: {atype!r}")
 
-            if win32gui.GetForegroundWindow() != hwnd:
-                _emit(f"[Engine] 步骤 {index + 1} 点击前 Roblox 已失去焦点，序列中止。", log_callback)
-                return False
-
-            hits_target, hit_hwnd, root_hwnd = _point_hits_window(hwnd, screen_x, screen_y)
-            if not hits_target:
-                _emit(
-                    f"[Engine] 目标点被其他窗口遮挡或句柄不匹配：point=({screen_x},{screen_y})，"
-                    f"hit={hit_hwnd}，root={root_hwnd}，expected={hwnd}。",
-                    log_callback,
-                )
-                return False
-
-            # 游戏的部署键固定为鼠标左键。BetterClick 先用相对微移刷新
-            # Roblox 的游戏内光标状态，再发送一次左键点击。
-            _click_current_position()
-            time.sleep(0.15)
-            delay = max(0.0, float(step.get("delay", 0.5)))
-            _emit(
-                f"[Engine] 步骤 {index + 1}: key={key}, client=({client_x},{client_y})/"
-                f"{width}x{height}, screen=({screen_x},{screen_y}), confirm=BetterClick, "
-                f"physical_lock=keyboard+mouse, delay={delay:.2f}s",
-                log_callback,
-            )
-            time.sleep(delay)
-
-        if checked_start is not None:
-            if win32gui.GetForegroundWindow() != hwnd:
-                _emit("[Engine] 点击开始按钮前 Roblox 已失去焦点，序列中止。", log_callback)
-                return False
-            client_x, client_y, screen_x, screen_y, width, height = checked_start
-            moved, actual_x, actual_y = _move_and_verify(screen_x, screen_y)
-            if not moved:
-                _emit(
-                    f"[Engine] 开始按钮光标定位失败，期望=({screen_x},{screen_y})，"
-                    f"实际=({actual_x},{actual_y})。",
-                    log_callback,
-                )
-                return False
-            if win32gui.GetForegroundWindow() != hwnd:
-                _emit("[Engine] 开始按钮点击前 Roblox 已失去焦点，序列中止。", log_callback)
-                return False
-            hits_target, hit_hwnd, root_hwnd = _point_hits_window(
-                hwnd,
-                screen_x,
-                screen_y,
-            )
-            if not hits_target:
-                _emit(
-                    f"[Engine] 开始按钮被遮挡：hit={hit_hwnd}，root={root_hwnd}，expected={hwnd}。",
-                    log_callback,
-                )
-                return False
-            _click_current_position()
-            time.sleep(0.15)
-            _emit(
-                f"[Engine] 已点击开始按钮: client=({client_x},{client_y})/"
-                f"{width}x{height}, screen=({screen_x},{screen_y}), "
-                "physical_lock=keyboard+mouse",
-                log_callback,
-            )
-            time.sleep(0.1)
-
-        sequence_ok = True
+        session_ok = True
         return True
     except Exception as e:
-        _emit(f"[Engine] 动作序列执行异常: {e}", log_callback)
+        _emit(f"[Engine] 输入动作执行异常: {e}", log_callback)
         return False
     finally:
         try:
@@ -410,5 +389,5 @@ def run_action_sequence(hwnd, steps, start_click_rx=None, start_click_ry=None, l
             except Exception as unlock_error:
                 _emit(f"[Engine] 解除物理键鼠锁失败: {unlock_error}", log_callback)
         _ACTION_LOCK.release()
-        if not sequence_ok:
-            _emit("[Engine] 动作序列未完成，请根据上方首个错误定位原因。", log_callback)
+        if not session_ok:
+            _emit("[Engine] 输入动作序列未完成，请根据上方首个错误定位原因。", log_callback)
