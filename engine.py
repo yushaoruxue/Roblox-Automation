@@ -256,6 +256,7 @@ def run_action_sequence(hwnd, steps, start_click_rx=None, start_click_ry=None, l
         return False
 
     compiled = actions.compile_legacy_steps(steps, start_click_rx, start_click_ry)
+    _emit(f"[Actions] compiled legacy steps: {len(steps)} steps -> {len(compiled)} actions", log_callback)
     result = run_input_actions(hwnd, compiled, log_callback=log_callback)
     if result and (start_click_rx is not None or start_click_ry is not None):
         client_x, client_y, screen_x, screen_y, width, height = relative_to_screen(
