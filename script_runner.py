@@ -36,7 +36,7 @@ import engine
 import vision
 
 
-_INPUT_TYPES = ("key", "click")
+_INPUT_TYPES = ("key", "click", "key_down", "key_up")
 _VISION_TYPES = ("find_image", "click_image", "if_image")
 _ALL_TYPES = _INPUT_TYPES + _VISION_TYPES + ("repeat", "wait")
 

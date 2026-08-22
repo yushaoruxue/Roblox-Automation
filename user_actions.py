@@ -33,7 +33,8 @@ import copy
 # ---- v0.1 action library (categories shown in the GUI) ----
 ACTION_LIBRARY = {
     "点击": [("点击坐标", "click"), ("点击图片", "click_image")],
-    "输入": [("按键", "key"), ("按键后点击", "key_click")],
+    "输入": [("按键", "key"), ("按键后点击", "key_click"),
+             ("按住按键", "key_hold"), ("松开按键", "key_release")],
     "判断": [("如果图片", "if_image")],
     "流程": [("等待", "wait"), ("重复", "repeat"), ("动作组", "group")],
     "高级": [("找图片", "find_image")],
@@ -41,18 +42,20 @@ ACTION_LIBRARY = {
 
 # ---- default templates for new actions ----
 ACTION_TEMPLATES = {
-    "key": {"type": "key", "key": "1", "hold_seconds": 0.06, "after_wait": 0.0},
-    "click": {"type": "click", "x": 0.5, "y": 0.5, "after_wait": 0.0},
+    "key": {"type": "key", "key": "1", "hold_seconds": 0.06, "after_wait": 0.2},
+    "click": {"type": "click", "x": 0.5, "y": 0.5, "after_wait": 0.2},
     "key_click": {"type": "key_click", "key": "1", "hold_seconds": 0.06,
-                  "x": 0.5, "y": 0.5, "after_wait": 0.5},
+                  "x": 0.5, "y": 0.5, "after_wait": 0.2},
     "click_image": {"type": "click_image", "template": "", "threshold": 0.85,
-                    "after_wait": 0.3},
+                    "after_wait": 0.2},
     "if_image": {"type": "if_image", "template": "", "threshold": 0.85,
                  "then": [], "else": []},
     "repeat": {"type": "repeat", "count": 1, "actions": []},
     "group": {"type": "group", "name": "动作组", "actions": []},
     "wait": {"type": "wait", "seconds": 0.2},
     "find_image": {"type": "find_image", "template": "", "threshold": 0.85},
+    "key_hold": {"type": "key_hold", "key": "shift"},
+    "key_release": {"type": "key_release", "key": "shift"},
 }
 
 # ---- v0.2 / v0.3 roadmap (documented, NOT implemented; GUI hides them) ----
@@ -78,6 +81,10 @@ def action_summary(act):
     suffix = f"  +{after:g}s" if after else ""
     if t == "key":
         return f"按键 [{act.get('key', '')}]" + suffix
+    if t == "key_hold":
+        return f"按住 [{act.get('key', '')}]"
+    if t == "key_release":
+        return f"松开 [{act.get('key', '')}]"
     if t == "click":
         return f"点击 ({act.get('x', 0):.3f}, {act.get('y', 0):.3f})" + suffix
     if t == "key_click":
@@ -123,9 +130,10 @@ def validate_user_actions(actions, where="script"):
         loc = f"{where}[{i}]"
         if atype not in _VALID_TYPES:
             raise ValueError(f"{loc} 未知动作类型: {atype!r}")
-        if atype in ("key", "key_click"):
-            if not isinstance(act.get("key"), str):
-                raise ValueError(f"{loc} {atype} key 必须是字符串")
+        if atype in ("key", "key_click", "key_hold", "key_release"):
+            key_val = act.get("key")
+            if not isinstance(key_val, str) or not key_val.strip():
+                raise ValueError(f"{loc} {atype} key 必须是非空字符串")
         if atype in ("click", "key_click"):
             x, y = act.get("x"), act.get("y")
             if x is None or y is None:
@@ -173,6 +181,10 @@ def _compile_one(act):
                  "hold_seconds": float(act.get("hold_seconds", 0.06))}]
         _append_wait(prim, _after_wait(act))
         return prim
+    if t == "key_hold":
+        return [{"type": "key_down", "key": act["key"]}]
+    if t == "key_release":
+        return [{"type": "key_up", "key": act["key"]}]
     if t == "click":
         prim = [{"type": "click", "x": float(act["x"]), "y": float(act["y"])}]
         _append_wait(prim, _after_wait(act))

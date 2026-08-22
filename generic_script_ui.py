@@ -32,6 +32,36 @@ from script_store import ScriptStore, ScriptStoreError
 from generic_script_model import GenericScriptModel, GenericRunnerController
 
 
+# Tk KeySym → pydirectinput 键名映射
+_KEY_SYM_MAP = {
+    "space": "space", "Return": "enter", "Tab": "tab", "Escape": "esc",
+    "BackSpace": "backspace", "Delete": "delete", "Insert": "insert",
+    "Home": "home", "End": "end", "Prior": "pageup", "Next": "pagedown",
+    "Up": "up", "Down": "down", "Left": "left", "Right": "right",
+    "Shift_L": "shift", "Shift_R": "shift",
+    "Control_L": "ctrl", "Control_R": "ctrl",
+    "Alt_L": "alt", "Alt_R": "alt",
+    "Win_L": "winleft", "Win_R": "winright",
+    "Caps_Lock": "capslock", "Num_Lock": "numlock", "Scroll_Lock": "scrolllock",
+}
+for _i in range(1, 25):
+    _KEY_SYM_MAP[f"F{_i}"] = f"f{_i}"
+
+
+def _keysym_to_pydirect_key(event):
+    """把 Tk 的 KeyPress event 转换为 pydirectinput 接受的键名字符串。"""
+    ks = event.keysym
+    if ks in _KEY_SYM_MAP:
+        return _KEY_SYM_MAP[ks]
+    ch = event.char
+    # 排除不可见字符与空白；处理带 Shift 的可见字符（'!'、'@'、'A'…）
+    if ch and ch.isprintable() and ch.strip():
+        return ch
+    if ks and len(ks) == 1:
+        return ks
+    return ks or ""
+
+
 class GenericScriptUI(tk.Frame):
     def __init__(self, parent, app, scripts_dir):
         super().__init__(parent)
@@ -496,10 +526,17 @@ class GenericScriptUI(tk.Frame):
                  wraplength=280, justify="left").pack(anchor="w", padx=14, pady=(12, 8))
 
         if t == "key":
-            self._form_row("按键 key", "key", action.get("key", ""))
+            self._key_field_with_capture(action, "key", "按键 key")
             self._form_row("按住(秒)", "hold_seconds", action.get("hold_seconds", 0.06), "float")
             self._form_row("执行后等待(秒)", "after_wait", action.get("after_wait", 0), "float")
             self._test_btn(action)
+        elif t == "key_hold":
+            self._key_field_with_capture(action, "key", "按住哪个键")
+            tk.Label(self.form_frame, text="⚠ 必须有匹配的 key_release 松开，否则键会一直按住",
+                     bg=c["bg_surface"], fg="#e6b566", font=("Microsoft YaHei UI", 9),
+                     wraplength=280, justify="left").pack(anchor="w", padx=14, pady=4)
+        elif t == "key_release":
+            self._key_field_with_capture(action, "key", "松开哪个键")
         elif t == "click":
             self._form_row("X", "x", action.get("x", 0.5), "float")
             self._form_row("Y", "y", action.get("y", 0.5), "float")
@@ -507,21 +544,81 @@ class GenericScriptUI(tk.Frame):
             self._form_btn("从 Roblox 选择坐标", lambda: self._pick_coordinate(action)).pack(anchor="w", padx=14, pady=3)
             self._test_btn(action)
         elif t == "key_click":
-            self._form_row("按键 key", "key", action.get("key", "1"))
+            self._key_field_with_capture(action, "key", "按键 key")
             self._form_row("按住(秒)", "hold_seconds", action.get("hold_seconds", 0.06), "float")
             self._form_row("点击 X", "x", action.get("x", 0.5), "float")
             self._form_row("点击 Y", "y", action.get("y", 0.5), "float")
             self._form_btn("从 Roblox 选择坐标", lambda: self._pick_coordinate(action)).pack(anchor="w", padx=14, pady=3)
-            self._form_row("执行后等待(秒)", "after_wait", action.get("after_wait", 0.5), "float")
+            self._form_row("执行后等待(秒)", "after_wait", action.get("after_wait", 0.2), "float")
             self._test_btn(action)
         elif t == "wait":
-            self._form_row("等待(秒)", "seconds", action.get("seconds", 1.0), "float")
+            self._form_row("等待(秒)", "seconds", action.get("seconds", 0.2), "float")
         elif t in ("find_image", "click_image", "if_image"):
             self._image_form(action, t)
         elif t == "repeat":
             self._repeat_form(action)
         elif t == "group":
             self._form_row("名称", "name", action.get("name", "动作组"))
+
+    def _key_field_with_capture(self, action, key, label_text):
+        """生成「键名 + 捕获按钮」一行，key 字段带可点的"捕获"键。"""
+        c = self._c
+        fr = tk.Frame(self.form_frame, bg=c["bg_surface"])
+        fr.pack(fill="x", padx=14, pady=3)
+        tk.Label(fr, text=label_text, bg=c["bg_surface"], fg=c["fg_gray"], width=14,
+                 anchor="w").pack(side="left")
+        var = tk.StringVar(value=str(action.get(key, "")))
+        entry = tk.Entry(fr, textvariable=var, bg=c["bg_input"], fg=c["fg_white"],
+                         insertbackground=c["fg_white"], relief="flat", width=12)
+        entry.pack(side="left", fill="x", expand=True)
+        entry.bind("<FocusOut>", self._apply_form)
+        entry.bind("<Return>", self._apply_form)
+        self._form_entries[key] = (entry, "str", var)
+        self._btn(fr, "⌨ 捕获", lambda: self._capture_key_for(var), small=True).pack(side="left", padx=(4, 0))
+
+    def _capture_key_for(self, var):
+        def on_captured(key):
+            var.set(key)
+            self._apply_form()
+        self._capture_key(on_captured)
+
+    def _capture_key(self, on_captured):
+        """弹出一个模态对话框，监听下一个 KeyPress 并映射为 pydirectinput 键名。"""
+        c = self._c
+        top = tk.Toplevel(self)
+        top.title("捕获按键")
+        top.geometry("320x110+%d+%d" % (self.winfo_rootx() + 80, self.winfo_rooty() + 60))
+        top.configure(bg=c["bg_surface"])
+        top.attributes("-topmost", True)
+        tk.Label(top, text="请按下一个键（Esc 取消）",
+                 bg=c["bg_surface"], fg=c["fg_white"],
+                 font=("Microsoft YaHei UI", 10, "bold")).pack(expand=True, pady=(20, 8))
+        self.lbl_cap = tk.Label(top, text="等待按键…", bg=c["bg_surface"],
+                                fg=c["fg_gray"], font=("Microsoft YaHei UI", 9))
+        self.lbl_cap.pack()
+        top.focus_force()
+        top.grab_set()
+
+        def on_key(event):
+            key = _keysym_to_pydirect_key(event)
+            if key:
+                self.lbl_cap.config(text=f"已捕获: {key}")
+                top.after(120, lambda: _finish(key))
+            return "break"
+
+        def on_cancel(event=None):
+            top.destroy()
+
+        def _finish(key):
+            try:
+                top.destroy()
+            except tk.TclError:
+                pass
+            on_captured(key)
+
+        top.bind("<Key>", on_key)
+        top.bind("<Escape>", on_cancel)
+        top.protocol("WM_DELETE_WINDOW", on_cancel)
 
     def _image_form(self, action, t):
         c = self._c

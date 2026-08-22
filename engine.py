@@ -6,8 +6,6 @@ import win32api
 import win32con
 import win32gui
 import win32process
-import numpy as np
-import cv2
 import pydirectinput
 from PIL import ImageGrab
 
@@ -222,6 +220,36 @@ def _press_key_held(key, hold_seconds=0.08):
     return bool(downed and upped)
 
 
+def _press_key_down(key):
+    """只按下不松开（用于 key_hold）。返回是否成功。"""
+    ok = pydirectinput.keyDown(key)
+    if ok:
+        _HELD_KEYS.add(key)
+    return bool(ok)
+
+
+def _press_key_up(key):
+    """只松开（用于 key_release）。返回是否成功。"""
+    ok = pydirectinput.keyUp(key)
+    _HELD_KEYS.discard(key)
+    return bool(ok)
+
+
+# 跟踪当前被按住但尚未松开的键（key_hold 用），脚本结束/出错时统一释放，
+# 防止因脚本中断而留下"粘住"的键。
+_HELD_KEYS = set()
+
+
+def release_all_held_keys():
+    """释放所有被 key_hold 按住但尚未松开的键。"""
+    for k in list(_HELD_KEYS):
+        try:
+            pydirectinput.keyUp(k)
+        except Exception:
+            pass
+    _HELD_KEYS.clear()
+
+
 def _click_current_position():
     """在当前系统光标位置发送一次标准的合成左键点击。"""
     win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
@@ -325,6 +353,16 @@ def run_input_actions(hwnd, actions_list, log_callback=None):
                 if not _press_key_held(act["key"], act["hold_seconds"]):
                     _emit(f"[Engine] 动作 {index + 1} 的按键 {act['key']!r} 发送失败，序列中止。", log_callback)
                     return False
+            elif atype == "key_down":
+                if not _press_key_down(act["key"]):
+                    _emit(f"[Engine] 动作 {index + 1} 的按住 {act['key']!r} 失败，序列中止。", log_callback)
+                    return False
+                _emit(f"[Engine] 按住 {act['key']!r}", log_callback)
+            elif atype == "key_up":
+                if not _press_key_up(act["key"]):
+                    _emit(f"[Engine] 动作 {index + 1} 的松开 {act['key']!r} 失败，序列中止。", log_callback)
+                    return False
+                _emit(f"[Engine] 松开 {act['key']!r}", log_callback)
             elif atype == "click":
                 client_x, client_y, screen_x, screen_y, width, height = relative_to_screen(
                     hwnd, act["x"], act["y"]

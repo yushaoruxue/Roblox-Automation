@@ -48,7 +48,9 @@ class CompileTests(unittest.TestCase):
         g = ua.new_action("group")
         g["actions"] = [ua.new_action("key"), ua.new_action("click"), ua.new_action("wait")]
         out = ua.compile_user_actions([g])
-        self.assertEqual([x["type"] for x in out], ["key", "click", "wait"])
+        # key+wait, click+wait, wait (新默认 after_wait=0.2 自动追加 wait)
+        self.assertEqual([x["type"] for x in out],
+                         ["key", "wait", "click", "wait", "wait"])
 
     # E: nested compile structure
     def test_nested_if_repeat_group(self):
@@ -62,7 +64,8 @@ class CompileTests(unittest.TestCase):
         grp["actions"] = [ua.new_action("key_click")]
         out = ua.compile_user_actions([ifa, rep, grp])
         self.assertEqual(out[0]["type"], "if_image")
-        self.assertEqual(out[0]["then"], [{"type": "click", "x": 0.5, "y": 0.5}])
+        self.assertEqual(out[0]["then"], [{"type": "click", "x": 0.5, "y": 0.5},
+                                          {"type": "wait", "seconds": 0.2}])
         self.assertEqual(out[0]["else"], [{"type": "wait", "seconds": 0.2}])
         self.assertEqual(out[1]["type"], "repeat")
         self.assertEqual(out[1]["count"], 3)
@@ -98,10 +101,44 @@ class ModelRoundtripTests(unittest.TestCase):
         other = GenericScriptModel(self.store)
         other.load(model.script_id)
         self.assertEqual(other.actions[0]["type"], "key_click")
-        self.assertEqual(other.actions[0]["after_wait"], 0.5)
+        self.assertEqual(other.actions[0]["after_wait"], 0.2)
         self.assertEqual(other.actions[1]["type"], "group")
         self.assertEqual(other.actions[1]["actions"][0]["then"][0],
                          {"type": "click", "x": 0.1, "y": 0.2})
+
+
+# ---- key_hold / key_release 编译与摘要 ----
+class KeyHoldReleaseTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.store = ScriptStore(os.path.join(self.tmp, "scripts"))
+
+    def test_key_hold_compiles_to_key_down(self):
+        a = ua.new_action("key_hold")
+        a["key"] = "shift"
+        out = ua.compile_user_actions([a])
+        self.assertEqual(out, [{"type": "key_down", "key": "shift"}])
+
+    def test_key_release_compiles_to_key_up(self):
+        a = ua.new_action("key_release")
+        a["key"] = "shift"
+        out = ua.compile_user_actions([a])
+        self.assertEqual(out, [{"type": "key_up", "key": "shift"}])
+
+    def test_key_hold_release_have_no_after_wait(self):
+        self.assertNotIn("after_wait", ua.ACTION_TEMPLATES["key_hold"])
+        self.assertNotIn("after_wait", ua.ACTION_TEMPLATES["key_release"])
+
+    def test_summaries(self):
+        self.assertEqual(ua.action_summary(ua.new_action("key_hold")), "按住 [shift]")
+        self.assertEqual(ua.action_summary(ua.new_action("key_release")), "松开 [shift]")
+
+    def test_validate_rejects_empty_key(self):
+        for t in ("key_hold", "key_release"):
+            a = ua.new_action(t)
+            a["key"] = ""
+            with self.assertRaises(ValueError):
+                ua.validate_user_actions([a])
 
     # H: dirty on new/nested edit
     def test_dirty_on_user_actions(self):
