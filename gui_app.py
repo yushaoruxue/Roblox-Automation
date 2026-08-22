@@ -48,10 +48,12 @@ import vision
 from display_dimmer import DisplayDimmer
 from preview_dialog import PreviewDialog
 from profile_store import ProfileStore, ProfileStoreError
+from generic_script_ui import GenericScriptUI
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 PROFILES_DIR = os.path.join(BASE_DIR, "profiles")
+SCRIPTS_DIR = os.path.join(BASE_DIR, "scripts")
 TEMPLATES_DIR = os.path.join(BASE_DIR, "templates")
 LOG_FILE = os.path.join(BASE_DIR, "automation.log")
 DIAGNOSTICS_DIR = os.path.join(BASE_DIR, "diagnostics")
@@ -372,7 +374,14 @@ class AEAutomationApp:
         return button
         
     def create_widgets(self):
-        header = ttk.Frame(self.root)
+        # 顶部模式切换：AE 部署 / 通用脚本
+        self.mode_notebook = ttk.Notebook(self.root)
+        self.mode_notebook.pack(fill="both", expand=True)
+
+        self.ae_tab = ttk.Frame(self.mode_notebook)
+        self.mode_notebook.add(self.ae_tab, text="  AE 自动部署  ")
+
+        header = ttk.Frame(self.ae_tab)
         header.pack(fill="x", padx=22, pady=(18, 12))
 
         title_stack = ttk.Frame(header)
@@ -403,7 +412,7 @@ class AEAutomationApp:
 
         # 上方工作区与下方日志均可拖动分隔线调整高度。
         self.body_pane = tk.PanedWindow(
-            self.root,
+            self.ae_tab,
             orient=tk.VERTICAL,
             bg=self.bg_dark,
             bd=0,
@@ -825,6 +834,16 @@ class AEAutomationApp:
         self.body_pane.add(log_card, minsize=120, height=190, stretch="never")
         self.check_template_status()
 
+        # 通用脚本 Tab（渐进迁移：与旧 AE 模式并列，互不影响）
+        self.script_tab = ttk.Frame(self.mode_notebook)
+        self.mode_notebook.add(self.script_tab, text="  通用脚本  ")
+        self.generic_script_ui = GenericScriptUI(
+            self.script_tab,
+            app=self,
+            scripts_dir=SCRIPTS_DIR,
+        )
+        self.generic_script_ui.pack(fill="both", expand=True)
+
     # --- 辅助方法 ---
     def log(self, message):
         LOGGER.info(message)
@@ -835,6 +854,9 @@ class AEAutomationApp:
             "关闭程序",
             "当前部署方案有未保存的修改。",
         ):
+            return
+        # 通用脚本未保存保护 + 停止正在运行的脚本
+        if hasattr(self, "generic_script_ui") and not self.generic_script_ui.on_close():
             return
         self.running = False
         self.selection_in_progress = False
@@ -920,6 +942,7 @@ class AEAutomationApp:
             return
         self.root.deiconify()
         self.root.update_idletasks()
+        self.root.update()  # 强制完整重绘，避免被 hide/SetWindowPos 后出现白屏
         hwnd = self.get_main_window_hwnd()
         left, top, right, bottom = self.get_safe_restore_rect()
         win32gui.SetWindowPos(
@@ -1615,6 +1638,215 @@ class AEAutomationApp:
 
             canvas.bind("<Button-1>", on_anchor_click)
                 
+        canvas.bind("<ButtonPress-1>", on_press)
+        canvas.bind("<B1-Motion>", on_drag)
+        canvas.bind("<ButtonRelease-1>", on_release)
+        overlay.bind("<Escape>", cancel_crop)
+
+    # --- 通用坐标拾取（复用选点遮罩，结果经回调返回） ---
+    def pick_coordinate_generic(self, on_pick):
+        if self.selection_in_progress:
+            self.log("已有选点操作正在进行，已忽略重复请求。")
+            return
+        if not self.hwnd:
+            messagebox.showwarning("警告", "请先在左侧选择目标 Roblox 游戏窗口！")
+            return
+        title = win32gui.GetWindowText(self.hwnd)
+        if "Launcher" in title or "配置器" in title:
+            messagebox.showwarning("警告", "当前窗口为控制软件本身，请切换为 Roblox 游戏客户端！")
+            return
+
+        self.selection_in_progress = True
+
+        def cancel_selection(event=None):
+            self.finish_selection_ui()
+            self.log("已取消坐标选取。")
+
+        def on_click(event, overlay):
+            px, py = win32gui.GetCursorPos()
+            error_message = None
+            try:
+                cx, cy = win32gui.ScreenToClient(self.hwnd, (px, py))
+                _, _, cw, ch = win32gui.GetClientRect(self.hwnd)
+                if cw <= 0 or ch <= 0:
+                    raise ValueError(f"Roblox 客户区尺寸无效: {cw}x{ch}")
+                if not (0 <= cx < cw and 0 <= cy < ch):
+                    error_message = "点击位置不在所选 Roblox 客户区内，坐标没有保存。"
+                    return
+                rx = cx / max(1, cw - 1)
+                ry = cy / max(1, ch - 1)
+                on_pick(rx, ry)
+                self.log(f"捕获坐标: client=({cx},{cy})/{cw}x{ch}, relative=({rx:.4f},{ry:.4f})")
+            except Exception as e:
+                error_message = str(e)
+            finally:
+                self.finish_selection_ui(overlay)
+                if error_message:
+                    messagebox.showerror("选点无效", error_message)
+
+        def open_overlay():
+            if not self.selection_in_progress:
+                return
+            try:
+                overlay, canvas = self.create_target_overlay(0.3, "crosshair", "black")
+                self.active_selection_overlay = overlay
+                canvas.bind("<Button-1>", lambda event: on_click(event, overlay))
+                overlay.bind("<Escape>", cancel_selection)
+                overlay.bind("<Button-3>", cancel_selection)
+            except Exception as e:
+                self.finish_selection_ui()
+                self.log(f"无法创建选点遮罩: {e}")
+                messagebox.showerror("选点失败", str(e))
+
+        self.root.after(300, open_overlay)
+
+    # --- 通用模板截取（复用框选遮罩，结果经回调返回） ---
+    def crop_template_generic(self, on_crop):
+        if not self.hwnd:
+            messagebox.showwarning("警告", "请先选择目标 Roblox 游戏窗口！")
+            return
+        title = win32gui.GetWindowText(self.hwnd)
+        if "Launcher" in title or "配置器" in title:
+            messagebox.showwarning("警告", "当前窗口为控制软件本身，请切换为 Roblox 游戏客户端！")
+            return
+
+        self.hide_main_window_for_selection()
+        time.sleep(0.3)
+        try:
+            overlay, canvas = self.create_target_overlay(0.15, "crosshair", "gray")
+        except Exception as e:
+            self.restore_main_window()
+            self.log(f"无法创建裁剪遮罩: {e}")
+            messagebox.showerror("裁剪失败", str(e))
+            return
+
+        # 顶部提示文字，明确告诉用户当前正在框选
+        canvas.create_text(
+            16, 24, anchor="w",
+            text="✛ 按住鼠标左键拖动，框选要识别的区域（Esc 取消）",
+            fill="#ffff00", font=("Microsoft YaHei", 14, "bold"),
+        )
+
+        start_screen = [None]
+        start_canvas = [None]
+        rect_ids = [None, None]   # [外层黑色, 内层白色] 双层描边
+        corner_ids = [None]        # 16 条线：4 角 × (水平+垂直) × (外黑+内白)
+        CORNER_LEN = 22
+
+        def _create_corners(x1, y1, x2, y2):
+            """四角各画 2 段 L（黑外 + 白内），返回 16 个 line id。"""
+            ids = []
+            corners = [
+                (x1, y1, +1, +1),  # top-left
+                (x2, y1, -1, +1),  # top-right
+                (x1, y2, +1, -1),  # bottom-left
+                (x2, y2, -1, -1),  # bottom-right
+            ]
+            for cx, cy, hx, vy in corners:
+                # 黑色外层（粗）
+                h_black = canvas.create_line(cx, cy, cx + hx * CORNER_LEN, cy,
+                                              fill="#000000", width=6)
+                v_black = canvas.create_line(cx, cy, cx, cy + vy * CORNER_LEN,
+                                              fill="#000000", width=6)
+                # 白色内层（细），叠在黑色中间形成光晕
+                h_white = canvas.create_line(cx, cy, cx + hx * CORNER_LEN, cy,
+                                              fill="#ffffff", width=2)
+                v_white = canvas.create_line(cx, cy, cx, cy + vy * CORNER_LEN,
+                                              fill="#ffffff", width=2)
+                ids.extend([h_black, h_white, v_black, v_white])
+            return ids
+
+        def _update_corners(ids, x1, y1, x2, y2):
+            corners = [
+                (x1, y1, +1, +1),
+                (x2, y1, -1, +1),
+                (x1, y2, +1, -1),
+                (x2, y2, -1, -1),
+            ]
+            for i, (cx, cy, hx, vy) in enumerate(corners):
+                # 每个角占 4 个 id：黑横 / 白横 / 黑纵 / 白纵
+                canvas.coords(ids[i * 4 + 0], cx, cy, cx + hx * CORNER_LEN, cy)
+                canvas.coords(ids[i * 4 + 1], cx, cy, cx + hx * CORNER_LEN, cy)
+                canvas.coords(ids[i * 4 + 2], cx, cy, cx, cy + vy * CORNER_LEN)
+                canvas.coords(ids[i * 4 + 3], cx, cy, cx, cy + vy * CORNER_LEN)
+
+        def finish_crop(gx1, gy1, gx2, gy2):
+            try:
+                win_left, win_top = win32gui.ClientToScreen(self.hwnd, (0, 0))
+                _, _, cw, ch = win32gui.GetClientRect(self.hwnd)
+                rx1 = gx1 - win_left
+                ry1 = gy1 - win_top
+                rx2 = gx2 - win_left
+                ry2 = gy2 - win_top
+                if rx1 < 0 or ry1 < 0 or rx2 > cw or ry2 > ch:
+                    raise ValueError("裁剪框不完全位于 Roblox 客户区")
+                if rx2 - rx1 < 20 or ry2 - ry1 < 10:
+                    raise ValueError("裁剪区域过小；宽度至少 20 像素，高度至少 10 像素。")
+
+                time.sleep(0.15)
+                full_img = engine.capture_window(self.hwnd)
+                if full_img is None:
+                    raise RuntimeError("无法抓取 Roblox 画面，请确认窗口未最小化或被遮挡。")
+
+                cropped = full_img[ry1:ry2, rx1:rx2]
+                if cropped.size == 0:
+                    raise ValueError("截图区域宽度或高度过小。")
+
+                # 默认以框选区域中心作为点击锚点（后续可再调整）
+                on_crop(cropped, 0.5, 0.5)
+            except Exception as e:
+                self.log(f"模板截取失败: {e}")
+                messagebox.showerror("模板截取失败", str(e))
+            finally:
+                self.restore_main_window()
+
+        def cancel_crop(event=None):
+            try:
+                overlay.destroy()
+            finally:
+                self.restore_main_window()
+                self.log("已取消模板截取。")
+
+        def on_press(event):
+            start_screen[0] = win32gui.GetCursorPos()
+            start_canvas[0] = (event.x, event.y)
+            # 黑外 + 白内 双层描边：亮暗背景都极醒目（解决浅色背景下单一颜色看不清的问题）
+            rect_ids[0] = canvas.create_rectangle(
+                event.x, event.y, event.x + 1, event.y + 1,
+                outline="#000000", width=5, fill="",
+            )
+            rect_ids[1] = canvas.create_rectangle(
+                event.x, event.y, event.x + 1, event.y + 1,
+                outline="#ffffff", width=2, fill="",
+            )
+            corner_ids[0] = _create_corners(event.x, event.y, event.x, event.y)
+
+        def on_drag(event):
+            if start_canvas[0] is None:
+                return
+            sx, sy = start_canvas[0]
+            ex, ey = event.x, event.y
+            x1, y1 = min(sx, ex), min(sy, ey)
+            x2, y2 = max(sx, ex), max(sy, ey)
+            canvas.coords(rect_ids[0], x1, y1, x2, y2)
+            canvas.coords(rect_ids[1], x1, y1, x2, y2)
+            _update_corners(corner_ids[0], x1, y1, x2, y2)
+
+        def on_release(event):
+            if start_screen[0] is None:
+                return
+            end_x, end_y = win32gui.GetCursorPos()
+            x1, y1 = start_screen[0]
+            gx1 = min(x1, end_x)
+            gy1 = min(y1, end_y)
+            gx2 = max(x1, end_x)
+            gy2 = max(y1, end_y)
+            if gx2 - gx1 < 20 or gy2 - gy1 < 10:
+                messagebox.showerror("裁剪区域过小", "请拖动框选一个至少 20×10 像素的识别区域。")
+                return
+            overlay.destroy()
+            finish_crop(gx1, gy1, gx2, gy2)
+
         canvas.bind("<ButtonPress-1>", on_press)
         canvas.bind("<B1-Motion>", on_drag)
         canvas.bind("<ButtonRelease-1>", on_release)
@@ -2435,6 +2667,21 @@ class AEAutomationApp:
 if __name__ == "__main__":
     try:
         root = tk.Tk()
+        # 按系统 DPI 自动缩放（解决双屏不同分辨率下字小问题）
+        try:
+            dpi = ctypes.windll.user32.GetDpiForSystem()
+        except AttributeError:
+            try:
+                hdc = ctypes.windll.user32.GetDC(0)
+                dpi = ctypes.windll.gdi32.GetDeviceCaps(hdc, 88)  # LOGPIXELSX
+            finally:
+                try:
+                    ctypes.windll.user32.ReleaseDC(0, hdc)
+                except Exception:
+                    pass
+        if dpi and dpi > 96:
+            root.tk.call("tk", "scaling", dpi / 96.0)
+            LOGGER.info("按系统 DPI %d 自动缩放 (×%.2f)", dpi, dpi / 96.0)
         app = AEAutomationApp(root)
         root.mainloop()
     except Exception as error:

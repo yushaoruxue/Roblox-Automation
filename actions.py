@@ -72,6 +72,11 @@ def validate_actions(actions):
                 raise ValueError(f"动作 {index + 1} 的 hold_seconds 无效")
             if hold < 0:
                 raise ValueError(f"动作 {index + 1} 的 hold_seconds 不能小于 0")
+        elif atype in ("key_down", "key_up"):
+            # 持久按键/松键：只要求 key 非空字符串，不限制取值，不强行释放。
+            key = act.get("key")
+            if not isinstance(key, str) or not key.strip():
+                raise ValueError(f"动作 {index + 1} 的按键不能为空")
         elif atype == "click":
             x, y = act.get("x"), act.get("y")
             if x is None or y is None:
