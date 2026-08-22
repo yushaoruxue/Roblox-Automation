@@ -810,13 +810,19 @@ class GenericScriptUI(tk.Frame):
             action["x"] = rx
             action["y"] = ry
             self.model.mark_dirty()
-            # 注意：on_pick 在主窗口被 overlay 隐藏时调用，此刻直接操作
-            # self.tree 会拿到 None children 抛 'NoneType is not iterable'。
-            # 用 after_idle 推迟到 finish_selection_ui 恢复主窗口后再重建。
             def _refresh_after_pick():
-                self._rebuild_tree()
+                self._log(f"[PICK DEBUG] after_idle fired, action_now=({action.get('x')},{action.get('y')})")
+                # 优先：原地更新流程树该 iid 的 text + 字段框值，不走完整 _rebuild_tree。
+                # 这样避免 iid 重建导致 selection 事件链路再次触发 _build_form 时机不一致。
                 if path_to_reselect is not None:
-                    self._reselect_path(path_to_reselect)
+                    iid = self._path_iids.get(tuple(path_to_reselect))
+                    if iid:
+                        # 同步流程树节点 text
+                        self.tree.item(iid, text=user_actions.action_summary(action))
+                        self.tree.see(iid)
+                    # 直接重建该 path 的表单（widget 上的 X/Y 字段会从 action 重新读）
+                    self._build_form(path_to_reselect)
+                self.tree.update_idletasks()
                 self._refresh_status()
                 self._log(f"已记录坐标: ({rx:.4f}, {ry:.4f})")
             self.after_idle(_refresh_after_pick)
