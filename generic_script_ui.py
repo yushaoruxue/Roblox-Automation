@@ -250,12 +250,14 @@ class GenericScriptUI(tk.Frame):
 
     def _save_script(self):
         try:
-            if self.model.script_id is None:
-                if not self.model.name:
-                    name = simpledialog.askstring("保存脚本", "输入脚本名称：", parent=self)
-                    if not name:
-                        return False
-                    self.model.name = name
+            if self.model.script_id is None and not self.model.name:
+                # 未命名新脚本自动生成名字，不再要求用户手动输入
+                existing = {s["name"] for s in self.store.list_scripts()}
+                base = "脚本"
+                n = 1
+                while f"{base}_{n}" in existing:
+                    n += 1
+                self.model.name = f"{base}_{n}"
             self.model.validate()
             script = self.model.save()
             self._refresh_script_list()
