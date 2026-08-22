@@ -1,5 +1,6 @@
 # Python / runtime artifacts
 venv/
+.venv/
 __pycache__/
 *.pyc
 *.pyo
@@ -7,6 +8,8 @@ __pycache__/
 # Generated debug/runtime output (not source)
 diagnostics/
 automation.log
+*.log
+*.tmp
 
 # Agent workspace data (not project source)
 .workbuddy/
@@ -17,3 +20,13 @@ automation.log
 # Experimental lab (research scripts + captured frame evidence), kept out of
 # the AE production baseline to avoid committing multi-MB frame captures.
 experiments/
+
+# Unrelated empty placeholder (0 bytes) - not part of the project, kept out
+# of the public repository. Local file is preserved.
+clash_proxies.json
+
+# IDE / editor local config (no shared value)
+.vscode/
+.idea/
+*.swp
+*.swo
