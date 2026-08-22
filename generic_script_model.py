@@ -20,6 +20,7 @@ import cv2
 import engine
 import vision
 import script_runner
+import user_actions
 from script_store import ScriptStoreError
 
 
@@ -161,16 +162,16 @@ class GenericScriptModel:
     @staticmethod
     def child_lists(action):
         """Return {key: list} of editable child action lists for a container
-        action (if_image -> then/else, repeat -> actions); {} for leaves."""
-        atype = action.get("type")
-        if atype == "if_image":
-            return {
-                "then": action.setdefault("then", []),
-                "else": action.setdefault("else", []),
-            }
-        if atype == "repeat":
-            return {"actions": action.setdefault("actions", [])}
-        return {}
+        user action (if_image -> then/else, repeat/group -> actions); {} for leaves."""
+        return {key: action.setdefault(key, [])
+                for key in user_actions.child_container(action)}
+
+    def compiled_actions(self):
+        """Lower the in-memory user actions to Layer-1 primitives for the runner."""
+        return user_actions.compile_user_actions(self.actions)
+
+    def validate(self):
+        user_actions.validate_user_actions(self.actions)
 
     # ---- template path helpers ----
     def assets_dir(self):
@@ -217,8 +218,10 @@ class GenericScriptModel:
         )
 
     def test_input(self, hwnd, action):
-        """Run a single key/click action through the real input session."""
-        return engine.run_input_actions(hwnd, [action])
+        """Run a single key/click/key_click user action through the real input
+        session (compiled to primitives first)."""
+        prims = user_actions.compile_user_actions([action])
+        return engine.run_input_actions(hwnd, prims)
 
 
 class GenericRunnerController:
