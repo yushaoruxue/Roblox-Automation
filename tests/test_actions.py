@@ -17,11 +17,8 @@ class CompileLegacyStepsTests(unittest.TestCase):
         out = actions.compile_legacy_steps([{"key": "1", "rx": 0.561, "ry": 0.553, "delay": 0.1}])
         self.assertEqual(out, [
             {"type": "key", "key": "z", "hold_seconds": 0.05},
-            {"type": "wait", "seconds": 0.1},
             {"type": "key", "key": "1", "hold_seconds": 0.06},
-            {"type": "wait", "seconds": 0.25},
             {"type": "click", "x": 0.561, "y": 0.553},
-            {"type": "wait", "seconds": 0.15},
             {"type": "wait", "seconds": 0.1},
         ])
 

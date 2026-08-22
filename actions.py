@@ -13,16 +13,13 @@ Slice 2 supports exactly three action types:
 The "x"/"y" of a click are Roblox client normalized coordinates (0..1).
 
 A legacy AE deployment step is compiled into the explicit sequence the old
-engine actually performed, so the generic executor needs zero hidden sleeps and
-the per-step Z reset is visible.
+engine performed: Z reset key -> slot key -> click -> delay wait. The per-step
+Z reset is made visible so the generic executor adds no hidden semantics.
 """
 
 _Z_RESET_KEY = "z"
 _Z_RESET_HOLD = 0.05
 _SLOT_KEY_HOLD = 0.06
-_POST_Z_WAIT = 0.10
-_POST_KEY_WAIT = 0.25
-_POST_CLICK_WAIT = 0.15
 
 
 def compile_legacy_steps(steps, start_click_rx=None, start_click_ry=None):
@@ -31,12 +28,10 @@ def compile_legacy_steps(steps, start_click_rx=None, start_click_ry=None):
     One legacy step ``{"key": "1", "rx": 0.561, "ry": 0.553, "delay": 0.1}``
     maps to::
 
-        z-reset key -> wait -> slot key -> wait -> click -> wait -> delay wait
+        z-reset key -> slot key -> click -> delay wait
 
-    The per-step Z reset and all implicit settling delays are made explicit so
-    the timing is preserved exactly and the executor stays generic. The key is
-    passed through as-is (no 1..6 restriction here — that belongs to the legacy
-    ``run_action_sequence`` wrapper).
+    The key is passed through as-is (no 1..6 restriction here — that belongs to
+    the legacy ``run_action_sequence`` wrapper).
     """
     actions = []
     for step in steps:
@@ -45,11 +40,8 @@ def compile_legacy_steps(steps, start_click_rx=None, start_click_ry=None):
         ry = float(step["ry"])
         delay = max(0.0, float(step.get("delay", 0.5)))
         actions.append({"type": "key", "key": _Z_RESET_KEY, "hold_seconds": _Z_RESET_HOLD})
-        actions.append({"type": "wait", "seconds": _POST_Z_WAIT})
         actions.append({"type": "key", "key": key, "hold_seconds": _SLOT_KEY_HOLD})
-        actions.append({"type": "wait", "seconds": _POST_KEY_WAIT})
         actions.append({"type": "click", "x": rx, "y": ry})
-        actions.append({"type": "wait", "seconds": _POST_CLICK_WAIT})
         actions.append({"type": "wait", "seconds": delay})
 
     if start_click_rx is not None or start_click_ry is not None:
