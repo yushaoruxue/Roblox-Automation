@@ -21,6 +21,10 @@ automation.log
 # the AE production baseline to avoid committing multi-MB frame captures.
 experiments/
 
+# Generic scripts + captured templates are user runtime data (created via the
+# GUI), not source code; kept out of the repository like experiments/.
+scripts/
+
 # Unrelated empty placeholder (0 bytes) - not part of the project, kept out
 # of the public repository. Local file is preserved.
 clash_proxies.json
