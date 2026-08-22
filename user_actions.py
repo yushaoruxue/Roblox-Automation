@@ -51,7 +51,7 @@ ACTION_TEMPLATES = {
                  "then": [], "else": []},
     "repeat": {"type": "repeat", "count": 1, "actions": []},
     "group": {"type": "group", "name": "动作组", "actions": []},
-    "wait": {"type": "wait", "seconds": 1.0},
+    "wait": {"type": "wait", "seconds": 0.2},
     "find_image": {"type": "find_image", "template": "", "threshold": 0.85},
 }
 

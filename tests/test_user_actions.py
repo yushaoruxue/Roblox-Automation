@@ -63,7 +63,7 @@ class CompileTests(unittest.TestCase):
         out = ua.compile_user_actions([ifa, rep, grp])
         self.assertEqual(out[0]["type"], "if_image")
         self.assertEqual(out[0]["then"], [{"type": "click", "x": 0.5, "y": 0.5}])
-        self.assertEqual(out[0]["else"], [{"type": "wait", "seconds": 1.0}])
+        self.assertEqual(out[0]["else"], [{"type": "wait", "seconds": 0.2}])
         self.assertEqual(out[1]["type"], "repeat")
         self.assertEqual(out[1]["count"], 3)
         self.assertEqual(out[1]["actions"][0]["type"], "find_image")

@@ -2667,6 +2667,21 @@ class AEAutomationApp:
 if __name__ == "__main__":
     try:
         root = tk.Tk()
+        # 按系统 DPI 自动缩放（解决双屏不同分辨率下字小问题）
+        try:
+            dpi = ctypes.windll.user32.GetDpiForSystem()
+        except AttributeError:
+            try:
+                hdc = ctypes.windll.user32.GetDC(0)
+                dpi = ctypes.windll.gdi32.GetDeviceCaps(hdc, 88)  # LOGPIXELSX
+            finally:
+                try:
+                    ctypes.windll.user32.ReleaseDC(0, hdc)
+                except Exception:
+                    pass
+        if dpi and dpi > 96:
+            root.tk.call("tk", "scaling", dpi / 96.0)
+            LOGGER.info("按系统 DPI %d 自动缩放 (×%.2f)", dpi, dpi / 96.0)
         app = AEAutomationApp(root)
         root.mainloop()
     except Exception as error:

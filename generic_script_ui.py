@@ -58,6 +58,35 @@ class GenericScriptUI(tk.Frame):
         }
         self._c = c
 
+        # ttk.Treeview 暗色主题（与 AE 风格一致，去掉默认白底）
+        style = ttk.Style()
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        style.configure(
+            "Treeview",
+            background=c["bg_input"],
+            foreground=c["fg_white"],
+            fieldbackground=c["bg_input"],
+            rowheight=26,
+            borderwidth=0,
+            font=("Microsoft YaHei UI", 9),
+        )
+        style.map(
+            "Treeview",
+            background=[("selected", c["accent"])],
+            foreground=[("selected", c["fg_white"])],
+        )
+        style.configure(
+            "Treeview.Heading",
+            background=c["bg_surface"],
+            foreground=c["fg_white"],
+            relief="flat",
+            font=("Microsoft YaHei UI", 9, "bold"),
+        )
+        style.layout("Treeview", [("Treeview.treearea", {"sticky": "nswe"})])
+
         self._build_layout()
         self._refresh_script_list()
         self._rebuild_tree()
